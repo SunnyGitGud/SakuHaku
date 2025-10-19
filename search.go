@@ -3,10 +3,21 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// Debug logging to file
+func debugLog(msg string) {
+	f, _ := os.OpenFile("debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if f != nil {
+		defer f.Close()
+		f.WriteString(fmt.Sprintf("%s\n", msg))
+	}
+}
 
 // Search Functions
 type animeSearchResultMsg struct {
@@ -83,7 +94,7 @@ func performAnimeSearch(query string, page int) tea.Cmd {
 	}
 }
 
-// This now points to the combined search in nyaa.go
+// Search both AnimeTosho and Nyaa
 func performTorrentSearch(query string) tea.Cmd {
 	return performCombinedSearch(query)
 }
