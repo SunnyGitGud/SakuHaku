@@ -2,50 +2,19 @@ package main
 
 import (
 	"fmt"
-	tea "github.com/charmbracelet/bubbletea"
 	"os"
+	
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/joho/godotenv"
 )
 
-func formatBytes(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
+func init() {
+	err := godotenv.Load()
+	if err != nil {
+		fmt.Printf("Warning: Could not load .env file: %v\n", err)
+	} else {
+		fmt.Println("✓ .env file loaded successfully")
 	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
-
-func hyperlink(text, link string) string {
-	if link == "" {
-		return text
-	}
-	return fmt.Sprintf("\033]8;;%s\033\\%s\033]8;;\033\\", link, text)
-}
-
-func toString(v any) string {
-	switch val := v.(type) {
-	case float64:
-		return fmt.Sprintf("%.0f", val)
-	case int:
-		return fmt.Sprintf("%d", val)
-	case string:
-		return val
-	case nil:
-		return "?"
-	default:
-		return fmt.Sprintf("%v", val)
-	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func main() {

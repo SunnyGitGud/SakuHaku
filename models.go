@@ -68,6 +68,7 @@ type Torrent struct {
 	Leechers   any    `json:"leechers"`
 	TotalSize  int64  `json:"total_size"`
 	WebsiteURL string `json:"website_url"`
+	Source     string `json:"source"` 
 }
 
 type ViewMode int
