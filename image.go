@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/eliukblau/pixterm/pkg/ansimage"
+	termimg "github.com/blacktop/go-termimg"
 )
 
 // Cache directory for downloaded images
@@ -62,7 +62,7 @@ func downloadImage(url string) (string, error) {
 	return cachePath, nil
 }
 
-// Render image to terminal with specified dimensions
+// Render image to terminal with true color
 func renderImageToTerminal(imagePath string, width, height int) (string, error) {
 	// Open image file
 	f, err := os.Open(imagePath)
@@ -77,25 +77,16 @@ func renderImageToTerminal(imagePath string, width, height int) (string, error) 
 		return "", err
 	}
 	
-	// Use NoDithering for cleaner output with less noise
-	// The first parameter is height in character cells, second is width
-	pix, err := ansimage.NewScaledFromImage(
-		img,
-		height,        // height in characters
-		width,         // width in characters
-		image.Black,   // background color
-		ansimage.ScaleModeResize,
-		ansimage.NoDithering,  // Clean output without dithering noise
-	)
+	// Use go-termimg to render the decoded image
+	output, err := termimg.Render(img)
 	if err != nil {
 		return "", err
 	}
 	
-	// Render to string
-	return pix.Render(), nil
+	return output, nil
 }
 
-// Get rendered anime poster - improved quality
+// Get rendered anime poster with true color
 func getAnimePoster(coverURL string, width, height int) string {
 	if coverURL == "" {
 		return generatePlaceholder(width, height)
@@ -107,7 +98,7 @@ func getAnimePoster(coverURL string, width, height int) string {
 		return generatePlaceholder(width, height)
 	}
 	
-	// Render with specified dimensions
+	// Render with true color
 	rendered, err := renderImageToTerminal(imagePath, width, height)
 	if err != nil {
 		return generatePlaceholder(width, height)
