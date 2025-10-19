@@ -181,8 +181,10 @@ func performCombinedSearch(query string) tea.Cmd {
 
 			torrents := make([]Torrent, 0, len(rss.Channel.Items))
 			for i, item := range rss.Channel.Items {
-				torrents = append(torrents, item.toTorrent(i))
-			}
+				t := item.toTorrent(i)
+				t.Source = "nyaa"  // <-- Add this line
+				torrents = append(torrents, t)
+}
 			nyaaChan <- torrents
 		}()
 
