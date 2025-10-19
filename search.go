@@ -3,9 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"net/url"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -85,19 +83,7 @@ func performAnimeSearch(query string, page int) tea.Cmd {
 	}
 }
 
+// This now points to the combined search in nyaa.go
 func performTorrentSearch(query string) tea.Cmd {
-	return func() tea.Msg {
-		apiURL := fmt.Sprintf("https://feed.animetosho.org/json?qx=1&q=%s", url.QueryEscape(query))
-		resp, err := http.Get(apiURL)
-		if err != nil {
-			return torrentSearchResultMsg(nil)
-		}
-		defer resp.Body.Close()
-
-		var torrents []Torrent
-		if err := json.NewDecoder(resp.Body).Decode(&torrents); err != nil {
-			return torrentSearchResultMsg(nil)
-		}
-		return torrentSearchResultMsg(torrents)
-	}
+	return performCombinedSearch(query)
 }

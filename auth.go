@@ -115,24 +115,32 @@ func exchangeCodeForToken(code string) (string, error) {
 
 	resp, err := http.PostForm(tokenURL, data)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	var result struct {
-		AccessToken string `json:"access_token"`
-		TokenType   string `json:"token_type"`
-		ExpiresIn   int    `json:"expires_in"`
-	}
+	// Read the full response for debugging
+	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	if result.AccessToken == "" {
-		return "", fmt.Errorf("no access token in response")
+	// Log the response for debugging
+	fmt.Printf("Token exchange response: %+v\n", result)
+	fmt.Printf("HTTP Status: %d\n", resp.StatusCode)
+
+	// Check for error in response
+	if errMsg, ok := result["error"]; ok {
+		return "", fmt.Errorf("OAuth error: %v - %v", errMsg, result["error_description"])
 	}
 
-	return result.AccessToken, nil
+	// Try to get access token
+	accessToken, ok := result["access_token"].(string)
+	if !ok || accessToken == "" {
+		return "", fmt.Errorf("no access token in response: %+v", result)
+	}
+
+	return accessToken, nil
 }
 
 func getUserInfo(token string) (string, int, error) {
