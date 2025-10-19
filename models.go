@@ -24,6 +24,15 @@ type Title struct {
 	English string `json:"english"`
 }
 
+type UserAnimeEntry struct {
+	ID        int     `json:"id"`
+	Status    string  `json:"status"`
+	Progress  int     `json:"progress"`
+	Score     float64 `json:"score"`
+	Media     Anime   `json:"media"`
+	UpdatedAt int64   `json:"updatedAt"`
+}
+
 type AniListResponse struct {
 	Data struct {
 		Page struct {
@@ -36,6 +45,16 @@ type AniListResponse struct {
 			} `json:"pageInfo"`
 			Media []Anime `json:"media"`
 		} `json:"Page"`
+		MediaListCollection struct {
+			Lists []struct {
+				Name    string           `json:"name"`
+				Entries []UserAnimeEntry `json:"entries"`
+			} `json:"lists"`
+		} `json:"MediaListCollection"`
+		Viewer struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"Viewer"`
 	} `json:"data"`
 }
 
@@ -54,19 +73,31 @@ type Torrent struct {
 type ViewMode int
 
 const (
-	ModeAnime ViewMode = iota
+	ModeLogin ViewMode = iota
+	ModeUserList
+	ModeAnimeSearch
 	ModeTorrents
 )
 
 type model struct {
+	// Auth
+	accessToken string
+	username    string
+	userID      int
+
 	// Common
 	mode        ViewMode
 	ready       bool
 	viewport    viewport.Model
 	searchMode  bool
 	searchInput string
+	loginMsg    string
 
-	// Anime mode
+	// User list mode
+	userEntries     []UserAnimeEntry
+	userEntryCursor int
+
+	// Anime search mode
 	anime           []Anime
 	animeCursor     int
 	animePage       int

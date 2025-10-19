@@ -10,39 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// ----- AniList API -----
-const anilistQuery = `
-query ($search: String, $page: Int, $perPage: Int) {
-  Page(page: $page, perPage: $perPage) {
-    pageInfo {
-      total
-      perPage
-      currentPage
-      lastPage
-      hasNextPage
-    }
-    media(search: $search, type: ANIME, sort: POPULARITY_DESC) {
-      id
-      title {
-        romaji
-        english
-      }
-      format
-      status
-      episodes
-      averageScore
-      season
-      seasonYear
-      description
-      coverImage {
-        large
-      }
-      siteUrl
-    }
-  }
-}
-`
-
+// Search Functions
 type animeSearchResultMsg struct {
 	anime      []Anime
 	totalPages int
@@ -60,7 +28,36 @@ func performAnimeSearch(query string, page int) tea.Cmd {
 		}
 
 		requestBody := map[string]any{
-			"query":     anilistQuery,
+			"query": `
+			query ($search: String, $page: Int, $perPage: Int) {
+				Page(page: $page, perPage: $perPage) {
+					pageInfo {
+						total
+						perPage
+						currentPage
+						lastPage
+						hasNextPage
+					}
+					media(search: $search, type: ANIME, sort: POPULARITY_DESC) {
+						id
+						title {
+							romaji
+							english
+						}
+						format
+						status
+						episodes
+						averageScore
+						season
+						seasonYear
+						coverImage {
+							large
+						}
+						siteUrl
+					}
+				}
+			}
+			`,
 			"variables": variables,
 		}
 
@@ -69,11 +66,7 @@ func performAnimeSearch(query string, page int) tea.Cmd {
 			return animeSearchResultMsg{anime: nil}
 		}
 
-		resp, err := http.Post(
-			"https://graphql.anilist.co",
-			"application/json",
-			bytes.NewBuffer(jsonData),
-		)
+		resp, err := http.Post("https://graphql.anilist.co", "application/json", bytes.NewBuffer(jsonData))
 		if err != nil {
 			return animeSearchResultMsg{anime: nil}
 		}
@@ -107,35 +100,4 @@ func performTorrentSearch(query string) tea.Cmd {
 		}
 		return torrentSearchResultMsg(torrents)
 	}
-}
-
-func getInitialAnime() []Anime {
-	variables := map[string]any{
-		"search":  "",
-		"page":    1,
-		"perPage": 20,
-	}
-
-	requestBody := map[string]any{
-		"query":     anilistQuery,
-		"variables": variables,
-	}
-
-	jsonData, _ := json.Marshal(requestBody)
-	resp, err := http.Post(
-		"https://graphql.anilist.co",
-		"application/json",
-		bytes.NewBuffer(jsonData),
-	)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-
-	var result AniListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil
-	}
-
-	return result.Data.Page.Media
 }
