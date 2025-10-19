@@ -226,11 +226,20 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 	case "r":
+		// Refresh current list
 		if m.mode == ModeUserList && m.accessToken != "" {
-			return fetchUserAnimeList(m.accessToken, m.userID, "CURRENT")
+			return m.fetchCurrentList()
+		}
+		return nil
+	case "tab":
+		// Cycle through list types
+		if m.mode == ModeUserList {
+			m.currentListType = (m.currentListType + 1) % 5
+			return m.fetchCurrentList()
 		}
 		return nil
 	case "L":
+		// Logout (capital L)
 		if m.accessToken != "" {
 			homeDir, _ := os.UserHomeDir()
 			tokenPath := fmt.Sprintf("%s/%s", homeDir, tokenFile)
@@ -419,7 +428,7 @@ func (m *model) renderContent() string {
 
 func (m *model) renderUserListContent() string {
 	if len(m.userEntries) == 0 {
-		return "No anime in your list."
+		return "No anime found."
 	}
 
 	// Get selected entry for right panel
@@ -430,7 +439,14 @@ func (m *model) renderUserListContent() string {
 
 	// Left panel - list
 	var leftPanel strings.Builder
-	leftPanel.WriteString(fmt.Sprintf("👤 %s's Continue Watching\n\n", m.username))
+
+	// List header
+	listTitle := m.currentListType.String()
+	if m.username != "" && (m.currentListType == ListCurrentlyWatching || m.currentListType == ListPlanToWatch) {
+		leftPanel.WriteString(fmt.Sprintf("👤 %s's %s\n\n", m.username, listTitle))
+	} else {
+		leftPanel.WriteString(fmt.Sprintf("📺 %s\n\n", listTitle))
+	}
 
 	for i, entry := range m.userEntries {
 		cursor := "  "
@@ -443,27 +459,40 @@ func (m *model) renderUserListContent() string {
 			title = entry.Media.Title.Romaji
 		}
 
-		// Truncate title if too long
-		if len(title) > 40 {
-			title = title[:37] + "..."
+		// Truncate title if too long for left panel
+		maxTitleWidth := (m.viewport.Width / 2) - 15
+		if maxTitleWidth < 20 {
+			maxTitleWidth = 20
+		}
+		if len(title) > maxTitleWidth {
+			title = title[:maxTitleWidth-3] + "..."
 		}
 
-		episodes := "?"
-		if entry.Media.Episodes != nil {
-			episodes = fmt.Sprintf("%d", *entry.Media.Episodes)
+		// Show different info based on list type
+		var info string
+		if m.currentListType == ListCurrentlyWatching || m.currentListType == ListPlanToWatch {
+			episodes := "?"
+			if entry.Media.Episodes != nil {
+				episodes = fmt.Sprintf("%d", *entry.Media.Episodes)
+			}
+			progress := fmt.Sprintf("%d/%s", entry.Progress, episodes)
+			info = fmt.Sprintf(" (%s)", progress)
+		} else {
+			if entry.Media.Score != nil {
+				info = fmt.Sprintf(" ⭐%d%%", *entry.Media.Score)
+			}
 		}
 
-		progress := fmt.Sprintf("%d/%s", entry.Progress, episodes)
-		line := fmt.Sprintf("%s%s (%s)\n", cursor, title, progress)
+		line := fmt.Sprintf("%s%s%s\n", cursor, title, info)
 		leftPanel.WriteString(line)
 	}
 
-	// Right panel - details with image
+	// Right panel - details
 	var rightPanel strings.Builder
 	if selectedEntry != nil {
-		// Render poster
+		// Render poster if available
 		if selectedEntry.Media.CoverImage.Large != "" {
-			poster := getAnimePoster(selectedEntry.Media.CoverImage.Large, 40, 25)
+			poster := getAnimePoster(selectedEntry.Media.CoverImage.Large, 35, 20)
 			rightPanel.WriteString(poster)
 			rightPanel.WriteString("\n")
 		}
@@ -475,16 +504,26 @@ func (m *model) renderUserListContent() string {
 		}
 		rightPanel.WriteString(fmt.Sprintf("📺 %s\n\n", title))
 
-		// Details
-		episodes := "?"
-		if selectedEntry.Media.Episodes != nil {
-			episodes = fmt.Sprintf("%d", *selectedEntry.Media.Episodes)
-		}
+		// Show different details based on list type
+		if m.currentListType == ListCurrentlyWatching || m.currentListType == ListPlanToWatch {
+			// User's personal data
+			episodes := "?"
+			if selectedEntry.Media.Episodes != nil {
+				episodes = fmt.Sprintf("%d", *selectedEntry.Media.Episodes)
+			}
+			rightPanel.WriteString(fmt.Sprintf("Your Progress: %d/%s\n", selectedEntry.Progress, episodes))
 
-		rightPanel.WriteString(fmt.Sprintf("Your Progress: %d/%s\n", selectedEntry.Progress, episodes))
-		rightPanel.WriteString(fmt.Sprintf("Your Score: ⭐ %.1f/10\n", selectedEntry.Score))
-		rightPanel.WriteString(fmt.Sprintf("Status: %s\n", selectedEntry.Status))
-		rightPanel.WriteString(fmt.Sprintf("Last Updated: %s\n\n", formatRelativeTime(selectedEntry.UpdatedAt)))
+			if selectedEntry.Score > 0 {
+				rightPanel.WriteString(fmt.Sprintf("Your Score: ⭐ %.1f/10\n", selectedEntry.Score))
+			}
+
+			rightPanel.WriteString(fmt.Sprintf("Status: %s\n", selectedEntry.Status))
+
+			if selectedEntry.UpdatedAt > 0 {
+				rightPanel.WriteString(fmt.Sprintf("Last Updated: %s\n", selectedEntry.UpdatedAt))
+			}
+			rightPanel.WriteString("\n")
+		}
 
 		// Anime details
 		score := "N/A"
@@ -495,6 +534,20 @@ func (m *model) renderUserListContent() string {
 		rightPanel.WriteString(fmt.Sprintf("Format: %s\n", selectedEntry.Media.Format))
 		rightPanel.WriteString(fmt.Sprintf("Average Score: %s\n", score))
 
+		episodes := "?"
+		if selectedEntry.Media.Episodes != nil {
+			episodes = fmt.Sprintf("%d", *selectedEntry.Media.Episodes)
+		}
+		rightPanel.WriteString(fmt.Sprintf("Episodes: %s\n", episodes))
+
+		if selectedEntry.Media.Season != "" {
+			year := ""
+			if selectedEntry.Media.SeasonYear != nil {
+				year = fmt.Sprintf(" %d", *selectedEntry.Media.SeasonYear)
+			}
+			rightPanel.WriteString(fmt.Sprintf("Season: %s%s\n", selectedEntry.Media.Season, year))
+		}
+
 		if selectedEntry.Media.SiteURL != "" {
 			rightPanel.WriteString(fmt.Sprintf("\n🔗 %s\n", hyperlink("View on AniList", selectedEntry.Media.SiteURL)))
 		}
@@ -503,7 +556,6 @@ func (m *model) renderUserListContent() string {
 	// Combine panels side by side
 	return combinePanels(leftPanel.String(), rightPanel.String(), m.viewport.Width)
 }
-
 
 func (m *model) renderAnimeContent() string {
 	if len(m.anime) == 0 {
@@ -519,7 +571,7 @@ func (m *model) renderAnimeContent() string {
 	// Left panel - list
 	var leftPanel strings.Builder
 	leftPanel.WriteString("📺 Anime Search Results\n\n")
-	
+
 	for i, a := range m.anime {
 		cursor := "  "
 		if m.animeCursor == i {
@@ -598,7 +650,6 @@ func (m *model) renderAnimeContent() string {
 	return combinePanels(leftPanel.String(), rightPanel.String(), m.viewport.Width)
 }
 
-
 func (m *model) renderTorrentContent() string {
 	perPage := 20
 	visible := m.visibleTorrents(perPage)
@@ -628,7 +679,7 @@ func (m *model) renderTorrentContent() string {
 		if _, ok := m.selectedTorrents[actualIndex]; ok {
 			checked = "x"
 		}
-		
+
 		// Show source badge
 		sourceBadge := "📦"
 		if t.Source == "nyaa" {
@@ -636,9 +687,9 @@ func (m *model) renderTorrentContent() string {
 		}
 
 		line := fmt.Sprintf("%s [%s] %s %s\n   💾 %s | 🌱 %s | 🧲 %s | 📤 %s\n\n",
-			cursor, checked, sourceBadge, t.Title, 
-			formatBytes(t.TotalSize), 
-			toString(t.Seeders), 
+			cursor, checked, sourceBadge, t.Title,
+			formatBytes(t.TotalSize),
+			toString(t.Seeders),
 			toString(t.Leechers),
 			hyperlink("magnet", t.MagnetURI))
 		sb.WriteString(line)
@@ -681,22 +732,22 @@ func combinePanels(left, right string, totalWidth int) string {
 		if i < len(leftLines) {
 			leftLine = leftLines[i]
 		}
-		
+
 		// Remove ANSI codes for length calculation
 		leftDisplayLen := visualLength(leftLine)
-		
+
 		// Truncate if too long
 		if leftDisplayLen > leftWidth {
 			leftLine = truncateToWidth(leftLine, leftWidth-3) + "..."
 			leftDisplayLen = leftWidth
 		}
-		
+
 		// Pad to width
 		padding := leftWidth - leftDisplayLen
 		if padding < 0 {
 			padding = 0
 		}
-		
+
 		result.WriteString(leftLine)
 		result.WriteString(strings.Repeat(" ", padding))
 		result.WriteString(" │ ")
@@ -715,7 +766,7 @@ func combinePanels(left, right string, totalWidth int) string {
 func visualLength(s string) int {
 	inEscape := false
 	length := 0
-	
+
 	for _, r := range s {
 		if r == '\033' {
 			inEscape = true
@@ -727,7 +778,7 @@ func visualLength(s string) int {
 			length++
 		}
 	}
-	
+
 	return length
 }
 
@@ -736,7 +787,7 @@ func truncateToWidth(s string, width int) string {
 	inEscape := false
 	length := 0
 	result := strings.Builder{}
-	
+
 	for _, r := range s {
 		if r == '\033' {
 			inEscape = true
@@ -754,10 +805,9 @@ func truncateToWidth(s string, width int) string {
 			length++
 		}
 	}
-	
+
 	return result.String()
 }
-
 
 func (m *model) footerView() string {
 	var pageInfo string
@@ -766,7 +816,7 @@ func (m *model) footerView() string {
 	} else {
 		switch m.mode {
 		case ModeUserList:
-			pageInfo = fmt.Sprintf("%d anime | s: search | r: refresh | L: logout | Enter: torrents | q: quit", len(m.userEntries))
+			pageInfo = fmt.Sprintf("%d anime | Tab: switch list |s: search | r: refresh | L: logout | Enter: torrents | q: quit", len(m.userEntries))
 		case ModeAnimeSearch:
 			pageInfo = fmt.Sprintf("Page %d/%d | s: search | n/p: page | Enter: torrents | Esc: back | q: quit",
 				m.animePage+1, m.animeTotalPages)

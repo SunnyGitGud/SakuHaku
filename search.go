@@ -98,6 +98,7 @@ func performAnimeSearch(query string, page int) tea.Cmd {
 
 // Search both AnimeTosho and Nyaa
 func performTorrentSearch(query string) tea.Cmd {
+<<<<<<< HEAD
 	return func() tea.Msg {
 		animetoshoChan := make(chan []Torrent, 1)
 		nyaaChan := make(chan []Torrent, 1)
@@ -232,3 +233,7 @@ func parseNyaaRSS(resp *http.Response, query string) []Torrent {
 	debugLog(fmt.Sprintf("Parsed %d Nyaa torrents", len(torrents)))
 	return torrents
 }
+=======
+	return performCombinedSearch(query)
+}
+>>>>>>> 9a772087f77d87291857d66e3f1cfe594e0a7dc6

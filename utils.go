@@ -19,14 +19,14 @@ func formatRelativeTime(timestamp int64) string {
 	if timestamp == 0 {
 		return "Unknown"
 	}
-	
+
 	t := time.Unix(timestamp, 0)
 	duration := time.Since(t)
-	
+
 	days := int(duration.Hours() / 24)
 	hours := int(duration.Hours())
 	minutes := int(duration.Minutes())
-	
+
 	switch {
 	case days > 30:
 		months := days / 30
@@ -51,6 +51,35 @@ func formatRelativeTime(timestamp int64) string {
 		return fmt.Sprintf("%d minutes ago", minutes)
 	default:
 		return "Just now"
+	}
+}
+
+func formatTime(ts int) string {
+	if ts <= 0 {
+		return "Unknown"
+	}
+
+	t := time.Unix(int64(ts), 0)
+	now := time.Now()
+
+	// If timestamp is in the future, just show the formatted date.
+	if t.After(now) {
+		return t.Format("Jan 2, 2006 15:04")
+	}
+
+	d := now.Sub(t)
+
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 30*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return t.Format("Jan 2, 2006")
 	}
 }
 

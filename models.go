@@ -68,7 +68,7 @@ type Torrent struct {
 	Leechers   any    `json:"leechers"`
 	TotalSize  int64  `json:"total_size"`
 	WebsiteURL string `json:"website_url"`
-	Source     string `json:"source"` 
+	Source     string `json:"source"`
 }
 
 type ViewMode int
@@ -94,6 +94,9 @@ type model struct {
 	searchInput string
 	loginMsg    string
 
+	// List type tracking
+	currentListType ListType
+
 	// User list mode
 	userEntries     []UserAnimeEntry
 	userEntryCursor int
@@ -111,4 +114,31 @@ type model struct {
 	torrentPage      int
 	selectedTorrents map[int]struct{}
 	selectedAnime    *Anime
+}
+
+type ListType int
+
+const (
+	ListCurrentlyWatching ListType = iota
+	ListPlanToWatch
+	ListTrending
+	ListPopularSeason
+	ListTopRated
+)
+
+func (lt ListType) String() string {
+	switch lt {
+	case ListCurrentlyWatching:
+		return "Currently Watching"
+	case ListPlanToWatch:
+		return "Plan to Watch"
+	case ListTrending:
+		return "Trending Now"
+	case ListPopularSeason:
+		return "Popular This Season"
+	case ListTopRated:
+		return "Top Rated"
+	default:
+		return "Unknown"
+	}
 }
