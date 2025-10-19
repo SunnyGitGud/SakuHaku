@@ -47,13 +47,9 @@ func getTorrentList() []Torrent {
 		fmt.Println("No results found.")
 	}
 
-	if len(torrents) > 20 {
-		torrents = torrents[:20]
-	}
 	return torrents
 }
 
-// makes "text" clickable with "url"
 func hyperlink(text, link string) string {
 	if link == "" {
 		return text
