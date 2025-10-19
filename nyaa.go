@@ -1,8 +1,8 @@
 package main
 
 import (
-	"encoding/xml"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -40,11 +40,11 @@ type NyaaItem struct {
 func (item NyaaItem) toTorrent(index int) Torrent {
 	// Parse size string like "1.5 GiB" to bytes
 	size := parseSizeString(item.Size)
-	
+
 	// Parse seeders/leechers
 	seeders := parseIntString(item.Seeders)
 	leechers := parseIntString(item.Leechers)
-	
+
 	// Build magnet URI from infohash
 	magnetURI := ""
 	if item.InfoHash != "" {
@@ -52,7 +52,7 @@ func (item NyaaItem) toTorrent(index int) Torrent {
 			item.InfoHash,
 			url.QueryEscape(item.Title))
 	}
-	
+
 	return Torrent{
 		ID:         index,
 		Title:      item.Title,
@@ -72,15 +72,15 @@ func parseSizeString(sizeStr string) int64 {
 	if len(parts) != 2 {
 		return 0
 	}
-	
+
 	value, err := strconv.ParseFloat(parts[0], 64)
 	if err != nil {
 		return 0
 	}
-	
+
 	unit := strings.ToUpper(parts[1])
 	multiplier := int64(1)
-	
+
 	switch unit {
 	case "KIB":
 		multiplier = 1024
@@ -91,7 +91,7 @@ func parseSizeString(sizeStr string) int64 {
 	case "TIB":
 		multiplier = 1024 * 1024 * 1024 * 1024
 	}
-	
+
 	return int64(value * float64(multiplier))
 }
 
@@ -105,24 +105,24 @@ func performNyaaSearch(query string) tea.Cmd {
 	return func() tea.Msg {
 		// Nyaa.si RSS feed endpoint
 		apiURL := fmt.Sprintf("https://nyaa.si/?page=rss&q=%s&c=1_2&f=0", url.QueryEscape(query))
-		
+
 		resp, err := http.Get(apiURL)
 		if err != nil {
 			return torrentSearchResultMsg(nil)
 		}
 		defer resp.Body.Close()
-		
+
 		var rss NyaaRSS
 		if err := xml.NewDecoder(resp.Body).Decode(&rss); err != nil {
 			return torrentSearchResultMsg(nil)
 		}
-		
+
 		// Convert to our Torrent struct
 		torrents := make([]Torrent, 0, len(rss.Channel.Items))
 		for i, item := range rss.Channel.Items {
 			torrents = append(torrents, item.toTorrent(i))
 		}
-		
+
 		return torrentSearchResultMsg(torrents)
 	}
 }
@@ -138,7 +138,7 @@ func performCombinedSearch(query string) tea.Cmd {
 		// Search both AnimeTosho and Nyaa concurrently
 		animetoshoChan := make(chan []Torrent, 1)
 		nyaaChan := make(chan []Torrent, 1)
-		
+
 		// AnimeTosho search
 		go func() {
 			apiURL := fmt.Sprintf("https://feed.animetosho.org/json?qx=1&q=%s", url.QueryEscape(query))
@@ -148,13 +148,13 @@ func performCombinedSearch(query string) tea.Cmd {
 				return
 			}
 			defer resp.Body.Close()
-			
+
 			var torrents []Torrent
 			if err := json.NewDecoder(resp.Body).Decode(&torrents); err != nil {
 				animetoshoChan <- nil
 				return
 			}
-			
+
 			// Tag source
 			for i := range torrents {
 				torrents[i].ID = i
@@ -162,7 +162,7 @@ func performCombinedSearch(query string) tea.Cmd {
 			}
 			animetoshoChan <- torrents
 		}()
-		
+
 		// Nyaa search
 		go func() {
 			apiURL := fmt.Sprintf("https://nyaa.si/?page=rss&q=%s&c=1_2&f=0", url.QueryEscape(query))
@@ -172,24 +172,24 @@ func performCombinedSearch(query string) tea.Cmd {
 				return
 			}
 			defer resp.Body.Close()
-			
+
 			var rss NyaaRSS
 			if err := xml.NewDecoder(resp.Body).Decode(&rss); err != nil {
 				nyaaChan <- nil
 				return
 			}
-			
+
 			torrents := make([]Torrent, 0, len(rss.Channel.Items))
 			for i, item := range rss.Channel.Items {
 				torrents = append(torrents, item.toTorrent(i))
 			}
 			nyaaChan <- torrents
 		}()
-		
+
 		// Collect results
 		animetoshoResults := <-animetoshoChan
 		nyaaResults := <-nyaaChan
-		
+
 		// Combine and deduplicate
 		combined := make([]Torrent, 0)
 		if animetoshoResults != nil {
@@ -198,12 +198,12 @@ func performCombinedSearch(query string) tea.Cmd {
 		if nyaaResults != nil {
 			combined = append(combined, nyaaResults...)
 		}
-		
+
 		// Re-index
 		for i := range combined {
 			combined[i].ID = i
 		}
-		
+
 		return torrentSearchResultMsg(combined)
 	}
 }
