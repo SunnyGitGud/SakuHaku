@@ -100,33 +100,6 @@ func parseIntString(s string) int {
 	return val
 }
 
-// Perform Nyaa.si search
-func performNyaaSearch(query string) tea.Cmd {
-	return func() tea.Msg {
-		// Nyaa.si RSS feed endpoint
-		apiURL := fmt.Sprintf("https://nyaa.si/?page=rss&q=%s&c=1_2&f=0", url.QueryEscape(query))
-		
-		resp, err := http.Get(apiURL)
-		if err != nil {
-			return torrentSearchResultMsg(nil)
-		}
-		defer resp.Body.Close()
-		
-		var rss NyaaRSS
-		if err := xml.NewDecoder(resp.Body).Decode(&rss); err != nil {
-			return torrentSearchResultMsg(nil)
-		}
-		
-		// Convert to our Torrent struct
-		torrents := make([]Torrent, 0, len(rss.Channel.Items))
-		for i, item := range rss.Channel.Items {
-			torrents = append(torrents, item.toTorrent(i))
-		}
-		
-		return torrentSearchResultMsg(torrents)
-	}
-}
-
 // Combined search from multiple sources
 type combinedTorrentMsg struct {
 	torrents []Torrent
@@ -178,11 +151,12 @@ func performCombinedSearch(query string) tea.Cmd {
 				nyaaChan <- nil
 				return
 			}
-			
 			torrents := make([]Torrent, 0, len(rss.Channel.Items))
 			for i, item := range rss.Channel.Items {
-				torrents = append(torrents, item.toTorrent(i))
-			}
+				t := item.toTorrent(i)
+				t.Source = "nyaa"  // <-- Add this line
+				torrents = append(torrents, t)
+}
 			nyaaChan <- torrents
 		}()
 		

@@ -2,3 +2,4 @@
 .anilist_cli_config.json
 .anilist_token
 credentials.go
+debug.log
