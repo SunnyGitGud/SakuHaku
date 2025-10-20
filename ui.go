@@ -169,6 +169,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.handleWindowResize(msg)
 
+		return m, nil
+
 	case tea.KeyMsg:
 		cmd = m.handleKey(msg)
 		if cmd != nil {
@@ -206,6 +208,9 @@ func (m *model) handleWindowResize(msg tea.WindowSizeMsg) {
 	} else {
 		m.viewport.Width = msg.Width
 		m.viewport.Height = msg.Height - verticalMargin
+
+		// Re-render content with new dimensions (images will auto-resize)
+		m.viewport.SetContent(m.renderContent())
 	}
 }
 
@@ -518,6 +523,13 @@ func (m *model) renderUserListContent() string {
 		selectedEntry = &m.userEntries[m.userEntryCursor]
 	}
 
+	// Calculate dynamic sizes based on viewport
+	leftWidth := m.viewport.Width / 2
+	rightWidth := m.viewport.Width - leftWidth - 3
+
+	imageWidth := m.viewport.Width / 3
+	imageHeight := m.viewport.Height / 2 // Not really used, aspect ratio handles it
+
 	// Left panel - list
 	var leftPanel strings.Builder
 
@@ -540,8 +552,8 @@ func (m *model) renderUserListContent() string {
 			title = entry.Media.Title.Romaji
 		}
 
-		// Truncate title if too long for left panel
-		maxTitleWidth := (m.viewport.Width / 2) - 15
+		// Truncate title based on left panel width
+		maxTitleWidth := leftWidth - 15
 		if maxTitleWidth < 20 {
 			maxTitleWidth = 20
 		}
@@ -571,9 +583,9 @@ func (m *model) renderUserListContent() string {
 	// Right panel - details
 	var rightPanel strings.Builder
 	if selectedEntry != nil {
-		// Render poster if available
+		// Render poster with dynamic sizing
 		if selectedEntry.Media.CoverImage.Large != "" {
-			poster := getAnimePoster(selectedEntry.Media.CoverImage.Large, 35, 20)
+			poster := getAnimePoster(selectedEntry.Media.CoverImage.Large, imageWidth, imageHeight)
 			rightPanel.WriteString(poster)
 			rightPanel.WriteString("\n")
 		}
@@ -583,7 +595,10 @@ func (m *model) renderUserListContent() string {
 		if title == "" {
 			title = selectedEntry.Media.Title.Romaji
 		}
-		rightPanel.WriteString(fmt.Sprintf("📺 %s\n\n", title))
+
+		// Wrap title if too long for right panel
+		wrappedTitle := wrapText(title, rightWidth)
+		rightPanel.WriteString(fmt.Sprintf("📺 %s\n\n", wrappedTitle))
 
 		// Show different details based on list type
 		if m.currentListType == ListCurrentlyWatching || m.currentListType == ListPlanToWatch {
@@ -592,7 +607,7 @@ func (m *model) renderUserListContent() string {
 			if selectedEntry.Media.Episodes != nil {
 				episodes = fmt.Sprintf("%d", *selectedEntry.Media.Episodes)
 			}
-			rightPanel.WriteString(fmt.Sprintf("Your Progress: %d/%s\n", selectedEntry.Progress, episodes))
+			rightPanel.WriteString(fmt.Sprintf("Progress: %d/%s\n", selectedEntry.Progress, episodes))
 
 			if selectedEntry.Score > 0 {
 				rightPanel.WriteString(fmt.Sprintf("Your Score: ⭐ %.1f/10\n", selectedEntry.Score))
@@ -601,7 +616,7 @@ func (m *model) renderUserListContent() string {
 			rightPanel.WriteString(fmt.Sprintf("Status: %s\n", selectedEntry.Status))
 
 			if selectedEntry.UpdatedAt > 0 {
-				rightPanel.WriteString(fmt.Sprintf("Last Updated: %s\n", selectedEntry.UpdatedAt))
+				rightPanel.WriteString(fmt.Sprintf("Updated: %s\n", formatRelativeTime(selectedEntry.UpdatedAt)))
 			}
 			rightPanel.WriteString("\n")
 		}
@@ -613,7 +628,7 @@ func (m *model) renderUserListContent() string {
 		}
 
 		rightPanel.WriteString(fmt.Sprintf("Format: %s\n", selectedEntry.Media.Format))
-		rightPanel.WriteString(fmt.Sprintf("Average Score: %s\n", score))
+		rightPanel.WriteString(fmt.Sprintf("Avg Score: %s\n", score))
 
 		episodes := "?"
 		if selectedEntry.Media.Episodes != nil {
@@ -630,7 +645,7 @@ func (m *model) renderUserListContent() string {
 		}
 
 		if selectedEntry.Media.SiteURL != "" {
-			rightPanel.WriteString(fmt.Sprintf("\n🔗 %s\n", hyperlink("View on AniList", selectedEntry.Media.SiteURL)))
+			rightPanel.WriteString(fmt.Sprintf("\n🔗 %s\n", hyperlink("AniList", selectedEntry.Media.SiteURL)))
 		}
 	}
 
@@ -649,6 +664,27 @@ func (m *model) renderAnimeContent() string {
 		selectedAnime = &m.anime[m.animeCursor]
 	}
 
+	// Calculate dynamic sizes
+	leftWidth := m.viewport.Width / 2
+	rightWidth := m.viewport.Width - leftWidth - 3
+
+	// Image dimensions - MAXIMUM SIZE for best quality
+	imageWidth := rightWidth - 4
+	if imageWidth > 100 {
+		imageWidth = 100
+	}
+	if imageWidth < 40 {
+		imageWidth = 40
+	}
+
+	imageHeight := m.viewport.Height - 15
+	if imageHeight > 60 {
+		imageHeight = 60
+	}
+	if imageHeight < 30 {
+		imageHeight = 30
+	}
+
 	// Left panel - list
 	var leftPanel strings.Builder
 	leftPanel.WriteString("📺 Anime Search Results\n\n")
@@ -664,14 +700,13 @@ func (m *model) renderAnimeContent() string {
 			title = a.Title.Romaji
 		}
 
-		// Truncate title if too long
-		if len(title) > 45 {
-			title = title[:42] + "..."
+		// Truncate based on left width
+		maxLen := leftWidth - 20
+		if maxLen < 20 {
+			maxLen = 20
 		}
-
-		episodes := "?"
-		if a.Episodes != nil {
-			episodes = fmt.Sprintf("%d", *a.Episodes)
+		if len(title) > maxLen {
+			title = title[:maxLen-3] + "..."
 		}
 
 		score := "N/A"
@@ -679,16 +714,16 @@ func (m *model) renderAnimeContent() string {
 			score = fmt.Sprintf("%d%%", *a.Score)
 		}
 
-		line := fmt.Sprintf("%s%s (⭐ %s | 📺 %s eps)\n", cursor, title, score, episodes)
+		line := fmt.Sprintf("%s%s (⭐ %s)\n", cursor, title, score)
 		leftPanel.WriteString(line)
 	}
 
 	// Right panel - details with image
 	var rightPanel strings.Builder
 	if selectedAnime != nil {
-		// Render poster (higher quality, bigger size)
+		// Render poster with dynamic sizing
 		if selectedAnime.CoverImage.Large != "" {
-			poster := getAnimePoster(selectedAnime.CoverImage.Large, 400, 320)
+			poster := getAnimePoster(selectedAnime.CoverImage.Large, imageWidth, imageHeight)
 			rightPanel.WriteString(poster)
 			rightPanel.WriteString("\n")
 		}
@@ -698,7 +733,8 @@ func (m *model) renderAnimeContent() string {
 		if title == "" {
 			title = selectedAnime.Title.Romaji
 		}
-		rightPanel.WriteString(fmt.Sprintf("📺 %s\n\n", title))
+		wrappedTitle := wrapText(title, rightWidth)
+		rightPanel.WriteString(fmt.Sprintf("📺 %s\n\n", wrappedTitle))
 
 		// Details
 		episodes := "?"
@@ -723,7 +759,7 @@ func (m *model) renderAnimeContent() string {
 		rightPanel.WriteString(fmt.Sprintf("Status: %s\n\n", selectedAnime.Status))
 
 		if selectedAnime.SiteURL != "" {
-			rightPanel.WriteString(fmt.Sprintf("🔗 %s\n", hyperlink("View on AniList", selectedAnime.SiteURL)))
+			rightPanel.WriteString(fmt.Sprintf("🔗 %s\n", hyperlink("AniList", selectedAnime.SiteURL)))
 		}
 	}
 
@@ -936,4 +972,31 @@ func (m *model) visibleTorrents(perPage int) []Torrent {
 		return nil
 	}
 	return m.torrents[start:end]
+}
+
+func wrapText(text string, width int) string {
+	if len(text) <= width {
+		return text
+	}
+
+	var result strings.Builder
+	words := strings.Fields(text)
+	lineLen := 0
+
+	for i, word := range words {
+		wordLen := len(word)
+
+		if lineLen+wordLen+1 > width {
+			result.WriteString("\n")
+			lineLen = 0
+		} else if i > 0 {
+			result.WriteString(" ")
+			lineLen++
+		}
+
+		result.WriteString(word)
+		lineLen += wordLen
+	}
+
+	return result.String()
 }
