@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -20,6 +21,7 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderLeft(true).
 			Padding(0, 1)
+	spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 )
 
 // Bubble Tea Implementation
@@ -28,11 +30,17 @@ func initialModel() *model {
 	if err := client.Init(); err != nil {
 		fmt.Printf("Failed to initialize torrent client: %v", err)
 	}
+
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = spinnerStyle
 	m := &model{
 		mode:             ModeLogin,
 		selectedTorrents: make(map[int]struct{}),
 		loginMsg:         "Press 'l' to login with AniList or 's' to browse without login",
 		torrentClient:    client,
+		spinner:          s,
+		loading:          false,
 	}
 
 	// Try to load saved token
@@ -42,6 +50,8 @@ func initialModel() *model {
 		m.userID = userID
 		m.mode = ModeUserList
 		m.loginMsg = fmt.Sprintf("Welcome back, %s!", username)
+		m.loading = true
+		m.loadingMsg = "Loading your anime list..."
 	}
 
 	return m
@@ -50,9 +60,9 @@ func initialModel() *model {
 func (m *model) Init() tea.Cmd {
 	// If we have a token, fetch user list immediately
 	if m.accessToken != "" && m.userID != 0 {
-		return fetchUserAnimeList(m.accessToken, m.userID, "CURRENT")
+		return tea.Batch(m.spinner.Tick, fetchUserAnimeList(m.accessToken, m.userID, "CURRENT"))
 	}
-	return nil
+	return m.spinner.Tick
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -60,6 +70,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tc.TorrentAddedMsg:
+		m.loading = false
 		if msg.Error != nil {
 			m.loginMsg = fmt.Sprintf("Error adding torrent: %v", msg.Error)
 			return m, nil
@@ -95,6 +106,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.username = msg.username
 		m.userID = msg.userID
 		m.mode = ModeUserList
+		m.loading = true
+		m.loadingMsg = "Loading your anime list..."
 		m.loginMsg = fmt.Sprintf("Logged in as %s! Loading your anime list...", m.username)
 
 		if err := saveToken(msg.token, msg.username, msg.userID); err != nil {
@@ -106,13 +119,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ready = true
 		}
 
-		return m, fetchUserAnimeList(m.accessToken, m.userID, "CURRENT")
+		return m, tea.Batch(m.spinner.Tick, fetchUserAnimeList(m.accessToken, m.userID, "CURRENT"))
 
 	case authErrorMsg:
 		m.loginMsg = fmt.Sprintf("Login failed: %v\nPress 'l' to retry or 's' to browse without login", msg.err)
 		return m, nil
 
 	case userListMsg:
+		m.loading = false
 		m.mode = ModeUserList
 		m.userEntries = []UserAnimeEntry(msg)
 
@@ -128,6 +142,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case animeSearchResultMsg:
+		m.loading = false
 		m.anime = msg.anime
 		m.animeCursor = 0
 		m.animePage = msg.page
@@ -139,6 +154,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case torrentSearchResultMsg:
+		m.loading = false
 		m.mode = ModeTorrents
 		m.torrents = []Torrent(msg)
 		m.torrentCursor = 0
@@ -158,6 +174,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd != nil {
 			return m, cmd
 		}
+		var spinnerCmd tea.Cmd
+		m.spinner, spinnerCmd = m.spinner.Update(msg)
+
+		var viewportCmd tea.Cmd
+		m.viewport, viewportCmd = m.viewport.Update(msg)
+
+		return m, tea.Batch(spinnerCmd, viewportCmd)
 	}
 
 	var viewportCmd tea.Cmd
@@ -191,8 +214,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if m.mode == ModeLogin {
 		switch msg.String() {
 		case "l":
-			m.loginMsg = "Opening browser for authentication..."
-			return startOAuthFlow()
+			m.loading = true
+			m.loadingMsg = "Opening browser for authentication..."
+			return tea.Batch(m.spinner.Tick, startOAuthFlow())
 		case "s":
 			m.mode = ModeAnimeSearch
 			m.viewport.SetContent(m.renderContent())
@@ -216,7 +240,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				m.animeQuery = m.searchInput
 				m.searchInput = ""
 				m.mode = ModeAnimeSearch
-				return performAnimeSearch(m.animeQuery, 1)
+				m.loading = true
+				m.loadingMsg = "Searching anime..."
+				return tea.Batch(m.spinner.Tick, performAnimeSearch(m.animeQuery, 1))
 			}
 			m.searchMode = false
 			m.searchInput = ""
@@ -265,14 +291,18 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "r":
 		// Refresh current list
 		if m.mode == ModeUserList && m.accessToken != "" {
-			return m.fetchCurrentList()
+			m.loading = true
+			m.loadingMsg = "Refreshing list..."
+			return tea.Batch(m.spinner.Tick, m.fetchCurrentList())
 		}
 		return nil
 	case "tab":
 		// Cycle through list types
 		if m.mode == ModeUserList {
 			m.currentListType = (m.currentListType + 1) % 5
-			return m.fetchCurrentList()
+			m.loading = true
+			m.loadingMsg = fmt.Sprintf("Loading %s...", m.currentListType.String())
+			return tea.Batch(m.spinner.Tick, m.fetchCurrentList())
 		}
 		return nil
 	case "L":
@@ -325,7 +355,9 @@ func (m *model) handleUserListKeys(msg tea.KeyMsg) tea.Cmd {
 			if title == "" {
 				title = entry.Media.Title.Romaji
 			}
-			return performTorrentSearch(title)
+			m.loading = true
+			m.loadingMsg = "looking for torrets..."
+			return tea.Batch(m.spinner.Tick, performTorrentSearch(title))
 		}
 	}
 	return nil
@@ -401,7 +433,9 @@ func (m *model) handleTorrentKeys(msg tea.KeyMsg) tea.Cmd {
 		actualIndex := m.torrentPage*perPage + m.torrentCursor
 		if actualIndex < len(m.torrents) {
 			selectedTorrent := m.torrents[actualIndex]
-			return m.startTorrentStream(selectedTorrent.MagnetURI)
+			m.loading = true
+			m.loadingMsg = "Adding Torrent"
+			return tea.Batch(m.spinner.Tick, m.startTorrentStream(selectedTorrent.MagnetURI))
 		}
 		return nil
 	case " ":
@@ -444,6 +478,9 @@ func (m *model) ensureCursorVisible(lineHeight int) {
 }
 
 func (m *model) renderView() string {
+	if m.loading {
+		return fmt.Sprintf("\n\n   %s %s\n\n", m.spinner.View(), m.loadingMsg)
+	}
 	if m.mode == ModeLogin {
 		return fmt.Sprintf("\n\n  🎬 AniList Torrent Browser\n\n  %s\n\n", m.loginMsg)
 	}

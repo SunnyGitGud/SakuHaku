@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/anacrolix/torrent"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tc "github.com/sunnygitgud/sakuhaku/torrentclient"
 )
@@ -124,6 +125,11 @@ type model struct {
 	activeTorrent    *torrent.Torrent
 	streamURL        string
 	downloadProgress float64
+
+	//spinner
+	spinner    spinner.Model
+	loading    bool
+	loadingMsg string
 }
 
 type ListType int

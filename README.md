@@ -18,12 +18,15 @@ If
 
 Then that's sad.... Idk still have to fix zzzz gn.
 
-## add loading screen at every tea.msg update
+# add loading screen at every tea.msg update doneX
 ## add data streaming info screen on playing a torrent 
 ## add add episode and seeder filters 
 ## add pagination to hard codded anilist lists 
 ## edit mpv config with a script to show relevent details on the player pulling from anilist api
+## add proxy site arguemnt to the program
 
 
 ## for future add timestamp tracking to mpv to dinamically update anilist anime status 
+## todo just make the program take an arguement of proxy url
+
 
