@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	tc "github.com/sunnygitgud/sakuhaku/torrentclient"
 )
 
 var (
@@ -23,10 +24,15 @@ var (
 
 // Bubble Tea Implementation
 func initialModel() *model {
+	client := tc.NewTorrentClient(tc.ClientName, "8888")
+	if err := client.Init(); err != nil {
+		fmt.Printf("Failed to initialize torrent client: %v", err)
+	}
 	m := &model{
 		mode:             ModeLogin,
 		selectedTorrents: make(map[int]struct{}),
 		loginMsg:         "Press 'l' to login with AniList or 's' to browse without login",
+		torrentClient:    client,
 	}
 
 	// Try to load saved token
@@ -53,6 +59,37 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
+	case tc.TorrentAddedMsg:
+		if msg.Error != nil {
+			m.loginMsg = fmt.Sprintf("Error adding torrent: %v", msg.Error)
+			return m, nil
+		}
+		m.activeTorrent = msg.Torrent
+
+		vidfile := tc.GetLargestVideoFile(msg.Torrent)
+		if vidfile != nil {
+			m.streamURL = m.torrentClient.ServeTorrentEpisode(msg.Torrent, vidfile.DisplayPath())
+			return m, openVideoPlayer(m.streamURL)
+		} else {
+			msg.Torrent.DownloadAll()
+			m.streamURL = m.torrentClient.ServeTorrent(msg.Torrent)
+			return m, tea.Batch(
+				openVideoPlayer(m.streamURL),
+				tc.TickProgress(),
+			)
+		}
+	case tc.TorrentProgressMsg:
+		if m.activeTorrent != nil {
+			stats := m.activeTorrent.Stats()
+			m.downloadProgress = float64(stats.BytesReadData.Int64()) / float64(m.activeTorrent.Length()) * 100
+
+			// Continue ticking for progress updates
+			if m.downloadProgress < 100 {
+				return m, tc.TickProgress()
+			}
+		}
+		return m, nil
+
 	case authSuccessMsg:
 		m.accessToken = msg.token
 		m.username = msg.username
@@ -360,7 +397,14 @@ func (m *model) handleTorrentKeys(msg tea.KeyMsg) tea.Cmd {
 			m.viewport.SetContent(m.renderContent())
 			m.ensureCursorVisible(3)
 		}
-	case "enter", " ":
+	case "enter":
+		actualIndex := m.torrentPage*perPage + m.torrentCursor
+		if actualIndex < len(m.torrents) {
+			selectedTorrent := m.torrents[actualIndex]
+			return m.startTorrentStream(selectedTorrent.MagnetURI)
+		}
+		return nil
+	case " ":
 		actualIndex := m.torrentPage*perPage + m.torrentCursor
 		if _, ok := m.selectedTorrents[actualIndex]; ok {
 			delete(m.selectedTorrents, actualIndex)
@@ -826,6 +870,12 @@ func (m *model) footerView() string {
 			endIdx := min(startIdx+len(m.visibleTorrents(perPage))-1, len(m.torrents))
 			pageInfo = fmt.Sprintf("Page %d/%d | %d-%d of %d | Space/Enter: select | Esc: back | q: quit",
 				m.torrentPage+1, m.totalTorrentPages(perPage), startIdx, endIdx, len(m.torrents))
+			// Add streaming status if active
+			if m.activeTorrent != nil && m.downloadProgress < 100 {
+				pageInfo += fmt.Sprintf(" | Downloading: %.1f%%", m.downloadProgress)
+			} else if m.streamURL != "" {
+				pageInfo += " | Streaming active"
+			}
 		}
 	}
 

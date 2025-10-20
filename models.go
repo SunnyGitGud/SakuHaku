@@ -1,6 +1,10 @@
 package main
 
-import "github.com/charmbracelet/bubbles/viewport"
+import (
+	"github.com/anacrolix/torrent"
+	"github.com/charmbracelet/bubbles/viewport"
+	tc "github.com/sunnygitgud/sakuhaku/torrentclient"
+)
 
 // ----- Models -----
 type Anime struct {
@@ -114,6 +118,12 @@ type model struct {
 	torrentPage      int
 	selectedTorrents map[int]struct{}
 	selectedAnime    *Anime
+
+	// Torrent client
+	torrentClient    *tc.TorrentClient
+	activeTorrent    *torrent.Torrent
+	streamURL        string
+	downloadProgress float64
 }
 
 type ListType int

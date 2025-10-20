@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/joho/godotenv"
 )
@@ -24,3 +24,4 @@ func main() {
 		os.Exit(1)
 	}
 }
+
