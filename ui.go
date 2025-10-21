@@ -67,6 +67,14 @@ func (m *model) Init() tea.Cmd {
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+	var cmds []tea.Cmd
+	if m.loading {
+		var spinnerCmd tea.Cmd
+		m.spinner, spinnerCmd = m.spinner.Update(msg)
+		if spinnerCmd != nil {
+			cmds = append(cmds, spinnerCmd)
+		}
+	}
 
 	switch msg := msg.(type) {
 	case tc.TorrentAddedMsg:
@@ -185,7 +193,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var viewportCmd tea.Cmd
 	m.viewport, viewportCmd = m.viewport.Update(msg)
-	return m, viewportCmd
+	if viewportCmd != nil {
+		cmds = append(cmds, viewportCmd)
+	}
+
+	// Return all commands
+	return m, tea.Batch(cmds...)
 }
 
 func (m *model) View() string {

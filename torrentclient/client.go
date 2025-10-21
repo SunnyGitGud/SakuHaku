@@ -155,7 +155,7 @@ func (c *TorrentClient) getStorage() (string, error) {
 	return "", err
 }
 
-// ----- Adding Torrents -----
+// Adding Torrents
 
 // AddTorrent adds a torrent from magnet, URL, or file
 func (c *TorrentClient) AddTorrent(tor string) (*torrent.Torrent, error) {
@@ -229,7 +229,7 @@ func (c *TorrentClient) DownloadTorrent(torrent string) error {
 	return nil
 }
 
-// ----- HTTP Streaming Server -----
+// HTTP Streaming Server
 
 // StartServer starts the HTTP streaming server
 func (c *TorrentClient) StartServer() {
@@ -316,7 +316,7 @@ func (c *TorrentClient) ServeTorrentEpisode(t *torrent.Torrent, filePath string)
 	return fmt.Sprintf("http://localhost:%s/stream?hash=%s&filepath=%s", c.Port, mh, filePath)
 }
 
-// ----- Torrent Management -----
+// Torrent Management
 
 // ShowTorrents returns all loaded torrents
 func (c *TorrentClient) ShowTorrents() []*torrent.Torrent {
@@ -344,7 +344,7 @@ func (c *TorrentClient) Close() []error {
 	return c.Client.Close()
 }
 
-// ----- Utility Functions -----
+// Utility Functions
 
 // IsVideoFile checks if a file is a video
 func IsVideoFile(f *torrent.File) bool {
