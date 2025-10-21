@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	termimg "github.com/blacktop/go-termimg"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/disintegration/imaging"
+	"github.com/lucasb-eyer/go-colorful"
 )
 
 // Cache directory for downloaded images
@@ -62,8 +64,45 @@ func downloadImage(url string) (string, error) {
 	return cachePath, nil
 }
 
-// Render image to terminal with true color
-func renderImageToTerminal(imagePath string, width, height int) (string, error) {
+// imageToString converts an image to a string representation using half-blocks
+func imageToString(img image.Image) string {
+	b := img.Bounds()
+	imageWidth := b.Max.X
+	h := b.Max.Y
+	str := strings.Builder{}
+
+	// Use half-block characters (▀) to get 2x vertical resolution
+	for heightCounter := 0; heightCounter < h; heightCounter += 2 {
+		// Render each column of pixels
+		for x := 0; x < imageWidth; x++ {
+			// Get top pixel color
+			c1, _ := colorful.MakeColor(img.At(x, heightCounter))
+			color1 := lipgloss.Color(c1.Hex())
+
+			// Get bottom pixel color (or use top if we're at the last row)
+			var c2 colorful.Color
+			if heightCounter+1 < h {
+				c2, _ = colorful.MakeColor(img.At(x, heightCounter+1))
+			} else {
+				c2 = c1
+			}
+			color2 := lipgloss.Color(c2.Hex())
+
+			// Render half-block with foreground and background colors
+			str.WriteString(lipgloss.NewStyle().
+				Foreground(color1).
+				Background(color2).
+				Render("▀"))
+		}
+
+		str.WriteString("\n")
+	}
+
+	return str.String()
+}
+
+// renderImageToTerminal loads and renders an image from a file path
+func renderImageToTerminal(imagePath string, maxWidth, maxHeight int) (string, error) {
 	// Open image file
 	f, err := os.Open(imagePath)
 	if err != nil {
@@ -77,58 +116,90 @@ func renderImageToTerminal(imagePath string, width, height int) (string, error) 
 		return "", err
 	}
 
-	// Use go-termimg to render the decoded image
-	output, err := termimg.Render(img)
-	if err != nil {
-		return "", err
+	// Get original dimensions
+	bounds := img.Bounds()
+	imgWidth := bounds.Dx()
+	imgHeight := bounds.Dy()
+
+	aspectRatio := float64(imgWidth) / float64(imgHeight)
+
+	// Calculate target dimensions
+	// Each terminal character is roughly 1:2 (width:height)
+	// Half-blocks give us double vertical resolution
+	targetWidth := maxWidth
+	targetHeight := int(float64(targetWidth) / aspectRatio) // Account for character aspect ratio
+
+	// If height exceeds max, scale down
+	if targetHeight/2 > maxHeight {
+		targetHeight = maxHeight * 2
+		targetWidth = int(float64(targetHeight) * aspectRatio)
 	}
 
-	return output, nil
+	// Ensure minimum size for quality
+	if targetWidth < 20 {
+		targetWidth = 20
+	}
+	if targetHeight < 20 {
+		targetHeight = 20
+	}
+
+	// Resize image to exact target dimensions for best quality
+	resizedImg := imaging.Resize(img, targetWidth, targetHeight, imaging.Lanczos)
+
+	// Convert to string with colors
+	return imageToString(resizedImg), nil
 }
 
-// Get rendered anime poster with true color
-func getAnimePoster(coverURL string, width, height int) string {
+// getAnimePoster gets and renders an anime poster with dynamic sizing
+func getAnimePoster(coverURL string, maxWidth, maxHeight int) string {
 	if coverURL == "" {
-		return generatePlaceholder(width, height)
+		return generatePlaceholder(maxWidth, maxHeight)
 	}
 
 	// Download and cache
 	imagePath, err := downloadImage(coverURL)
 	if err != nil {
-		return generatePlaceholder(width, height)
+		return generatePlaceholder(maxWidth, maxHeight)
 	}
 
-	// Render with true color
-	rendered, err := renderImageToTerminal(imagePath, width, height)
+	// Render with the specified dimensions
+	rendered, err := renderImageToTerminal(imagePath, maxWidth, maxHeight)
 	if err != nil {
-		return generatePlaceholder(width, height)
+		return generatePlaceholder(maxWidth, maxHeight)
 	}
 
 	return rendered
 }
 
-// Generate ASCII placeholder for missing images
+// generatePlaceholder creates a simple placeholder box
 func generatePlaceholder(width, height int) string {
 	var sb strings.Builder
-	border := strings.Repeat("─", width)
 
+	border := strings.Repeat("─", width)
 	sb.WriteString("┌" + border + "┐\n")
+
 	for i := 0; i < height-2; i++ {
 		if i == height/2-1 {
 			text := "NO IMAGE"
 			padding := (width - len(text)) / 2
-			sb.WriteString("│" + strings.Repeat(" ", padding) + text + strings.Repeat(" ", width-padding-len(text)) + "│\n")
+			if padding < 0 {
+				padding = 0
+			}
+			spaces := width - padding - len(text)
+			if spaces < 0 {
+				spaces = 0
+			}
+			sb.WriteString("│" + strings.Repeat(" ", padding) + text + strings.Repeat(" ", spaces) + "│\n")
 		} else {
 			sb.WriteString("│" + strings.Repeat(" ", width) + "│\n")
 		}
 	}
-	sb.WriteString("└" + border + "┘\n")
 
+	sb.WriteString("└" + border + "┘\n")
 	return sb.String()
 }
 
-// Clear image cache
+// clearImageCache removes all cached images
 func clearImageCache() error {
 	return os.RemoveAll(cacheDir)
 }
-
