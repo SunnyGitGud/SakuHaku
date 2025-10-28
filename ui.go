@@ -20,7 +20,8 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderLeft(true).
 			Padding(0, 1)
-	spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	spinnerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
 )
 
 // Bubble Tea Implementation
@@ -36,6 +37,7 @@ func initialModel() *model {
 	m := &model{
 		mode:             ModeLogin,
 		selectedTorrents: make(map[int]struct{}),
+		cacheInfo:        make(map[int][]tc.LibraryEntry),
 		loginMsg:         "Press 'l' to login with AniList or 's' to browse without login",
 		torrentClient:    client,
 		spinner:          s,
@@ -137,6 +139,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = ModeUserList
 		m.userEntries = []UserAnimeEntry(msg)
 
+		// Load cache information for all anime in the list
+		m.loadCacheInfo()
+
 		if !m.ready {
 			m.viewport = viewport.New(80, 24)
 			m.ready = true
@@ -154,6 +159,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.animeCursor = 0
 		m.animePage = msg.page
 		m.animeTotalPages = msg.totalPages
+
+		// Load cache information for anime search results
+		m.loadAnimeCacheInfo()
+
 		if m.ready {
 			m.viewport.SetContent(m.renderContent())
 			m.viewport.GotoTop()
@@ -206,6 +215,24 @@ func (m *model) View() string {
 	return m.renderView()
 }
 
+// loadCacheInfo loads cache information for all anime in the current list
+func (m *model) loadCacheInfo() {
+	for _, entry := range m.userEntries {
+		if cachedEntries, err := m.torrentClient.GetCachedEpisodes(entry.Media.ID); err == nil {
+			m.cacheInfo[entry.Media.ID] = cachedEntries
+		}
+	}
+}
+
+// loadAnimeCacheInfo loads cache information for anime search results
+func (m *model) loadAnimeCacheInfo() {
+	for _, anime := range m.anime {
+		if cachedEntries, err := m.torrentClient.GetCachedEpisodes(anime.ID); err == nil {
+			m.cacheInfo[anime.ID] = cachedEntries
+		}
+	}
+}
+
 // UI Handlers
 func (m *model) handleWindowResize(msg tea.WindowSizeMsg) {
 	headerHeight := lipgloss.Height(m.headerView())
@@ -251,7 +278,7 @@ func (m *model) footerView() string {
 	} else {
 		switch m.mode {
 		case ModeUserList:
-			pageInfo = fmt.Sprintf("%d anime | Tab: switch list |s: search | r: refresh | L: logout | Enter: torrents | q: quit", len(m.userEntries))
+			pageInfo = fmt.Sprintf("%d anime | Tab: switch list | s: search | r: refresh | c: clear cache | L: logout | Enter: torrents | q: quit", len(m.userEntries))
 		case ModeAnimeSearch:
 			pageInfo = fmt.Sprintf("Page %d/%d | s: search | n/p: page | Enter: torrents | Esc: back | q: quit",
 				m.animePage+1, m.animeTotalPages)

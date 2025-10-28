@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	tc "github.com/sunnygitgud/sakuhaku/torrentclient"
 )
 
 func (m *model) renderView() string {
@@ -99,8 +101,14 @@ func (m *model) renderUserListContent() string {
 			}
 		}
 
-		line := fmt.Sprintf("%s%s%s\n", cursor, title, info)
-		leftPanel.WriteString(line)
+		// Apply pink color to selected entry
+		if m.userEntryCursor == i {
+			line := fmt.Sprintf("%s%s%s\n", cursor, selectedStyle.Render(title), info)
+			leftPanel.WriteString(line)
+		} else {
+			line := fmt.Sprintf("%s%s%s\n", cursor, title, info)
+			leftPanel.WriteString(line)
+		}
 	}
 
 	// Right panel - details
@@ -165,6 +173,23 @@ func (m *model) renderUserListContent() string {
 				year = fmt.Sprintf(" %d", *selectedEntry.Media.SeasonYear)
 			}
 			rightPanel.WriteString(fmt.Sprintf("Season: %s%s\n", selectedEntry.Media.Season, year))
+		}
+
+		// Cache information
+		if cachedEntries, exists := m.cacheInfo[selectedEntry.Media.ID]; exists && len(cachedEntries) > 0 {
+			rightPanel.WriteString("\n━━━ Cache Status ━━━\n")
+			rightPanel.WriteString(fmt.Sprintf("💾 %d episode(s) cached\n", len(cachedEntries)))
+
+			// Show cached episodes
+			for i, cached := range cachedEntries {
+				if i >= 3 { // Show max 3 episodes
+					rightPanel.WriteString(fmt.Sprintf("...and %d more episodes\n", len(cachedEntries)-3))
+					break
+				}
+				progress := int(cached.Progress * 100)
+				rightPanel.WriteString(fmt.Sprintf("  Episode %d: %d%% (%s)\n",
+					cached.Episode, progress, tc.FormatBytes(cached.Size)))
+			}
 		}
 
 		if selectedEntry.Media.SiteURL != "" {
@@ -237,8 +262,14 @@ func (m *model) renderAnimeContent() string {
 			score = fmt.Sprintf("%d%%", *a.Score)
 		}
 
-		line := fmt.Sprintf("%s%s (⭐ %s)\n", cursor, title, score)
-		leftPanel.WriteString(line)
+		// Apply pink color to selected entry
+		if m.animeCursor == i {
+			line := fmt.Sprintf("%s%s (⭐ %s)\n", cursor, selectedStyle.Render(title), score)
+			leftPanel.WriteString(line)
+		} else {
+			line := fmt.Sprintf("%s%s (⭐ %s)\n", cursor, title, score)
+			leftPanel.WriteString(line)
+		}
 	}
 
 	// Right panel - details with image
@@ -291,48 +322,211 @@ func (m *model) renderAnimeContent() string {
 }
 
 func (m *model) renderTorrentContent() string {
+	if len(m.torrents) == 0 {
+		return "No torrents found."
+	}
+
 	perPage := 20
 	visible := m.visibleTorrents(perPage)
 
-	if len(visible) == 0 {
-		return "No torrents found for this anime."
-	}
+	// Calculate dynamic sizes
+	leftWidth := m.viewport.Width / 2
+	rightWidth := m.viewport.Width - leftWidth - 3
 
-	var sb strings.Builder
-
-	if m.selectedAnime != nil {
-		title := m.selectedAnime.Title.English
-		if title == "" {
-			title = m.selectedAnime.Title.Romaji
-		}
-		sb.WriteString(fmt.Sprintf("🎬 Torrents for: %s\n\n", title))
-	}
+	// Left panel - torrent list
+	var leftPanel strings.Builder
+	leftPanel.WriteString("📦 Available Torrents\n\n")
 
 	for i, t := range visible {
-		cursor := " "
+		cursor := "  "
 		if m.torrentCursor == i {
-			cursor = ">"
+			cursor = "▶ "
 		}
 
-		actualIndex := m.torrentPage*perPage + i
+		// Show selection status
 		checked := " "
-		if _, ok := m.selectedTorrents[actualIndex]; ok {
-			checked = "x"
+		if _, ok := m.selectedTorrents[m.torrentPage*perPage+i]; ok {
+			checked = "✓"
 		}
 
-		// Show source badge
-		sourceBadge := "📦"
-		if t.Source == "nyaa" {
-			sourceBadge = "🐱"
+		// Format size and seeders/leechers
+		size := tc.FormatBytes(t.TotalSize)
+		seeds := toString(t.Seeders)
+		leech := toString(t.Leechers)
+
+		// Truncate title based on left panel width
+		title := t.Title
+		maxTitleWidth := leftWidth - 30 // Account for size and seed info
+		if len(title) > maxTitleWidth {
+			title = title[:maxTitleWidth-3] + "..."
 		}
 
-		line := fmt.Sprintf("%s [%s] %s %s\n   💾 %s | 🌱 %s | 🧲 %s | 📤 %s\n\n",
-			cursor, checked, sourceBadge, t.Title,
-			formatBytes(t.TotalSize),
-			toString(t.Seeders),
-			toString(t.Leechers),
-			hyperlink("magnet", t.MagnetURI))
-		sb.WriteString(line)
+		// Apply pink color to selected torrent
+		if m.torrentCursor == i {
+			line := fmt.Sprintf("%s[%s] %s (%s) S:%s/L:%s\n",
+				cursor, checked, selectedStyle.Render(title), size, seeds, leech)
+			leftPanel.WriteString(line)
+		} else {
+			line := fmt.Sprintf("%s[%s] %s (%s) S:%s/L:%s\n",
+				cursor, checked, title, size, seeds, leech)
+			leftPanel.WriteString(line)
+		}
 	}
-	return sb.String()
+
+	// Right panel - detailed info
+	var rightPanel strings.Builder
+	if len(visible) > 0 && m.torrentCursor < len(visible) {
+		selectedTorrent := visible[m.torrentCursor]
+		rightPanel.WriteString("📦 Torrent Details\n\n")
+
+		// Title with word wrap
+		wrappedTitle := wrapText(selectedTorrent.Title, rightWidth-2)
+		rightPanel.WriteString(fmt.Sprintf("%s\n\n", wrappedTitle))
+
+		// Basic info
+		rightPanel.WriteString(fmt.Sprintf("Size: %s\n", tc.FormatBytes(selectedTorrent.TotalSize)))
+		rightPanel.WriteString(fmt.Sprintf("Seeds: %s | Leechers: %s\n",
+			toString(selectedTorrent.Seeders),
+			toString(selectedTorrent.Leechers)))
+
+		// Source info
+		source := "Unknown"
+		switch selectedTorrent.Source {
+		case "nyaa":
+			source = "Nyaa.si 🐱"
+		case "animetosho":
+			source = "AnimeTosho 📦"
+		}
+		rightPanel.WriteString(fmt.Sprintf("Source: %s\n", source))
+
+		// Check if this anime has cached episodes
+		if m.selectedAnime != nil {
+			if cachedEntries, exists := m.cacheInfo[m.selectedAnime.ID]; exists && len(cachedEntries) > 0 {
+				rightPanel.WriteString("\n━━━ Cache Status ━━━\n\n")
+				rightPanel.WriteString(fmt.Sprintf("📦 %d episode(s) cached\n\n", len(cachedEntries)))
+
+				// Show cached episodes
+				for i, cached := range cachedEntries {
+					if i >= 5 { // Show max 5 episodes
+						rightPanel.WriteString(fmt.Sprintf("...and %d more episodes\n", len(cachedEntries)-5))
+						break
+					}
+					progress := int(cached.Progress * 100)
+					rightPanel.WriteString(fmt.Sprintf("Episode %d: %d%% (%s)\n",
+						cached.Episode, progress, tc.FormatBytes(cached.Size)))
+				}
+
+				// Show total cache size
+				totalSize := int64(0)
+				for _, cached := range cachedEntries {
+					totalSize += cached.Size
+				}
+				rightPanel.WriteString(fmt.Sprintf("\nTotal Cache Size: %s\n", tc.FormatBytes(totalSize)))
+			} else {
+				// Show that no episodes are cached
+				rightPanel.WriteString("\n━━━ Cache Status ━━━\n\n")
+				rightPanel.WriteString("No episodes cached\n")
+			}
+		}
+
+		// If torrent is active, show download status below cache info
+		if m.activeTorrent != nil && m.activeTorrent.InfoHash().String() == selectedTorrent.MagnetURI[20:60] {
+			// Get torrent info with proper speed calculation
+			torrentInfo, err := m.torrentClient.TorrentInfo(m.activeTorrent.InfoHash().String())
+			if err == nil {
+				rightPanel.WriteString("\n━━━ Download Status ━━━\n\n")
+
+				// Progress bar
+				width := rightWidth - 10
+				progressBar := makeProgressBar(torrentInfo.Progress, width)
+				rightPanel.WriteString(fmt.Sprintf("%s %.1f%%\n\n", progressBar, torrentInfo.Progress*100))
+
+				// Transfer stats
+				rightPanel.WriteString(fmt.Sprintf("Downloaded: %s\n",
+					tc.FormatBytes(torrentInfo.Size.Downloaded)))
+				rightPanel.WriteString(fmt.Sprintf("Uploaded: %s\n",
+					tc.FormatBytes(torrentInfo.Size.Uploaded)))
+				rightPanel.WriteString(fmt.Sprintf("Download Speed: %s\n",
+					tc.FormatSpeed(torrentInfo.Speed.Down)))
+				rightPanel.WriteString(fmt.Sprintf("Upload Speed: %s\n",
+					tc.FormatSpeed(torrentInfo.Speed.Up)))
+
+				// Peer info
+				rightPanel.WriteString(fmt.Sprintf("Connected Peers: %d\n", torrentInfo.Peers.Wires))
+				rightPanel.WriteString(fmt.Sprintf("Connected Seeders: %d\n", torrentInfo.Peers.Seeders))
+				rightPanel.WriteString(fmt.Sprintf("Connected Leechers: %d\n", torrentInfo.Peers.Leechers))
+
+				// Piece info
+				if m.activeTorrent.Info() != nil {
+					rightPanel.WriteString(fmt.Sprintf("Pieces: %d/%d\n",
+						torrentInfo.Size.Downloaded/int64(m.activeTorrent.Info().PieceLength),
+						torrentInfo.Pieces.Total))
+				}
+
+				// Time estimates
+				if torrentInfo.Time.Remaining > 0 {
+					rightPanel.WriteString(fmt.Sprintf("Time Remaining: %s\n", formatDuration(torrentInfo.Time.Remaining)))
+				}
+				if torrentInfo.Time.Elapsed > 0 {
+					rightPanel.WriteString(fmt.Sprintf("Time Elapsed: %s\n", formatDuration(torrentInfo.Time.Elapsed)))
+				}
+
+				// Stream status
+				if m.streamURL != "" {
+					rightPanel.WriteString("\n🎬 Streaming Active\n")
+					rightPanel.WriteString(fmt.Sprintf("URL: %s\n", m.streamURL))
+				}
+
+				// Video files
+				videos := tc.GetAllVideoFiles(m.activeTorrent)
+				if len(videos) > 0 {
+					rightPanel.WriteString("\n📺 Video Files:\n")
+					for i, v := range videos {
+						if i >= 5 { // Show max 5 files
+							rightPanel.WriteString(fmt.Sprintf("...and %d more files\n", len(videos)-5))
+							break
+						}
+						name := v.DisplayPath()
+						if len(name) > rightWidth-6 {
+							name = name[:rightWidth-9] + "..."
+						}
+						rightPanel.WriteString(fmt.Sprintf("%d. %s\n", i+1, name))
+					}
+				}
+			}
+		}
+
+		// Add magnet link
+		if selectedTorrent.MagnetURI != "" {
+			rightPanel.WriteString(fmt.Sprintf("\n🧲 %s\n",
+				hyperlink("Magnet Link", selectedTorrent.MagnetURI)))
+		}
+	}
+
+	return combinePanels(leftPanel.String(), rightPanel.String(), m.viewport.Width)
+}
+
+// Helper function to create a progress bar
+func makeProgressBar(progress float64, width int) string {
+	filled := int(progress * float64(width))
+	if filled > width {
+		filled = width
+	}
+	empty := width - filled
+	return fmt.Sprintf("[%s%s]",
+		strings.Repeat("=", filled),
+		strings.Repeat("-", empty))
+}
+
+// Helper function to format duration in seconds to human readable format
+func formatDuration(seconds int64) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	} else if seconds < 3600 {
+		return fmt.Sprintf("%dm %ds", seconds/60, seconds%60)
+	} else {
+		hours := seconds / 3600
+		minutes := (seconds % 3600) / 60
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
 }

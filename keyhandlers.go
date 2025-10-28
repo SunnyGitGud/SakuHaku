@@ -116,6 +116,17 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.loginMsg = "Logged out. Press 'l' to login or 's' to browse"
 		}
 		return nil
+	case "c":
+		// Clear cache for selected anime (lowercase c)
+		if m.mode == ModeUserList && m.userEntryCursor < len(m.userEntries) {
+			entry := m.userEntries[m.userEntryCursor]
+			if err := m.torrentClient.ClearAnimeCache(entry.Media.ID); err == nil {
+				// Reload cache info
+				m.loadCacheInfo()
+				m.viewport.SetContent(m.renderContent())
+			}
+		}
+		return nil
 	}
 
 	// Mode-specific keys

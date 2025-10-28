@@ -105,6 +105,7 @@ type model struct {
 	// User list mode
 	userEntries     []UserAnimeEntry
 	userEntryCursor int
+	cacheInfo       map[int][]tc.LibraryEntry // Cache info for each anime
 
 	// Anime search mode
 	anime           []Anime
