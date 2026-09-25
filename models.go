@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/anacrolix/torrent"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tc "github.com/sunnygitgud/sakuhaku/torrentclient"
@@ -9,19 +8,40 @@ import (
 
 // ----- Models -----
 type Anime struct {
-	ID          int    `json:"id"`
-	Title       Title  `json:"title"`
-	Format      string `json:"format"`
-	Status      string `json:"status"`
-	Episodes    *int   `json:"episodes"`
-	Score       *int   `json:"averageScore"`
-	Season      string `json:"season"`
-	SeasonYear  *int   `json:"seasonYear"`
-	Description string `json:"description"`
-	CoverImage  struct {
-		Large string `json:"large"`
+	ID          int      `json:"id"`
+	Title       Title    `json:"title"`
+	Format      string   `json:"format"`
+	Status      string   `json:"status"`
+	Episodes    *int     `json:"episodes"`
+	Score       *int     `json:"averageScore"`
+	Season      string   `json:"season"`
+	SeasonYear  *int     `json:"seasonYear"`
+	Description string   `json:"description"`
+	Duration    *int     `json:"duration"`
+	Genres      []string `json:"genres"`
+	Studios     struct {
+		Nodes []struct {
+			Name string `json:"name"`
+		} `json:"nodes"`
+	} `json:"studios"`
+	NextAiringEpisode *struct {
+		Episode  int   `json:"episode"`
+		AiringAt int64 `json:"airingAt"`
+	} `json:"nextAiringEpisode"`
+	CoverImage struct {
+		ExtraLarge string `json:"extraLarge"`
+		Large      string `json:"large"`
 	} `json:"coverImage"`
 	SiteURL string `json:"siteUrl"`
+}
+
+// PosterURL returns the highest resolution cover available. Downscaling a
+// large source gives a much sharper terminal render than upscaling a small one.
+func (a *Anime) PosterURL() string {
+	if a.CoverImage.ExtraLarge != "" {
+		return a.CoverImage.ExtraLarge
+	}
+	return a.CoverImage.Large
 }
 
 type Title struct {
@@ -60,7 +80,16 @@ type AniListResponse struct {
 			ID   int    `json:"id"`
 			Name string `json:"name"`
 		} `json:"Viewer"`
+		Media struct {
+			MediaListEntry *struct {
+				Progress int    `json:"progress"`
+				Status   string `json:"status"`
+			} `json:"mediaListEntry"`
+		} `json:"Media"`
 	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
 }
 
 type Torrent struct {
@@ -76,6 +105,15 @@ type Torrent struct {
 	Source     string `json:"source"`
 }
 
+// source is what to hand the torrent client: the magnet if we have one,
+// otherwise the .torrent URL
+func (t Torrent) source() string {
+	if t.MagnetURI != "" {
+		return t.MagnetURI
+	}
+	return t.TorrentURL
+}
+
 type ViewMode int
 
 const (
@@ -83,6 +121,8 @@ const (
 	ModeUserList
 	ModeAnimeSearch
 	ModeTorrents
+	ModeDownloads
+	ModeStreaming
 )
 
 type model struct {
@@ -94,6 +134,8 @@ type model struct {
 	// Common
 	mode        ViewMode
 	ready       bool
+	termWidth   int
+	termHeight  int
 	viewport    viewport.Model
 	searchMode  bool
 	searchInput string
@@ -105,6 +147,9 @@ type model struct {
 	// User list mode
 	userEntries     []UserAnimeEntry
 	userEntryCursor int
+	listPage        int // 1-based page of a browsable list
+	listLastPage    int
+	listHasNext     bool
 
 	// Anime search mode
 	anime           []Anime
@@ -113,18 +158,42 @@ type model struct {
 	animeTotalPages int
 	animeQuery      string
 
-	// Torrent mode
+	// Torrent mode. allTorrents holds the search results, torrents the
+	// filtered and sorted view of them that is shown and indexed into.
+	allTorrents      []Torrent
+	epFilter         int // 0 = any episode
+	pendingEpFilter  int // applied when the next results arrive
+	minSeeders       int
+	torrentSort      torrentSort
+	epInputMode      bool
+	epInput          string
+	selectedEntry    *UserAnimeEntry // list entry torrents were opened from, if any
 	torrents         []Torrent
 	torrentCursor    int
 	torrentPage      int
 	selectedTorrents map[int]struct{}
 	selectedAnime    *Anime
+	torrentsFrom     ViewMode // list the torrent search was started from
 
-	// Torrent client
-	torrentClient    *tc.TorrentClient
-	activeTorrent    *torrent.Torrent
-	streamURL        string
-	downloadProgress float64
+	// Split view (list + poster) scroll position
+	listOffset int
+
+	// Posters the last render wanted; fetched in the background after Update
+	wantPosters []string
+
+	// Torrent client / download manager
+	torrentClient  *tc.TorrentClient
+	streamURL      string
+	playback       *playback                 // episode being streamed
+	streamFrom     ViewMode                  // screen to return to from streaming
+	torrentCtx     map[string]*streamContext // anime context per info hash
+	downloads      []tc.DownloadInfo
+	downloadCursor int
+	prevMode       ViewMode
+	ticking        bool
+	confirmDelete  string // info hash awaiting a second X to delete files
+	statusMsg      string
+	confirmQuit    bool
 
 	//spinner
 	spinner    spinner.Model

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
@@ -8,20 +9,27 @@ import (
 	"github.com/joho/godotenv"
 )
 
-func init() {
-	err := godotenv.Load()
-	if err != nil {
-		fmt.Printf("Warning: Could not load .env file: %v\n", err)
-	} else {
-		fmt.Println("✓ .env file loaded successfully")
-	}
-}
-
 func main() {
-	p := tea.NewProgram(initialModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
-	if _, err := p.Run(); err != nil {
+	// A .env file is optional; real environment variables take precedence
+	_ = godotenv.Load()
+
+	if err := parseFlags(os.Args[1:]); err != nil {
+		if err == flag.ErrHelp {
+			return
+		}
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
+	m := initialModel()
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	_, err := p.Run()
+	// Flush piece completion state so partial downloads resume next time
+	if m.torrentClient != nil {
+		m.torrentClient.Close()
+	}
+	if err != nil {
 		fmt.Printf("Alas, there's been an error: %v", err)
 		os.Exit(1)
 	}
 }
-
