@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/pkg/browser"
 	tc "github.com/sunnygitgud/sakuhaku/torrentclient"
+	"github.com/sunnygitgud/sakuhaku/watchparty"
 )
 
 //go:embed mpv/sakuhaku.lua
@@ -42,7 +44,11 @@ type playback struct {
 
 	dir        string // temp dir holding the info/status files
 	statusPath string
+	ipcPath    string // mpv --input-ipc-server endpoint, for watch-together
 	proc       *exec.Cmd
+
+	// Set when this playback joins someone's watch-together room
+	invite *watchparty.Invite
 
 	// From mpv's status file
 	Pos, Duration float64
@@ -65,8 +71,19 @@ func (pb *playback) Title() string {
 }
 
 type playerStartedMsg struct {
-	pb  *playback
-	err error
+	pb     *playback
+	launch *playback // pb as the launcher left it, see apply
+	err    error
+}
+
+// apply copies what the launcher set up into the playback the UI uses
+func (msg playerStartedMsg) apply() {
+	pb, l := msg.pb, msg.launch
+	if l == nil {
+		return
+	}
+	pb.Player, pb.proc, pb.Running, pb.StartedAt = l.Player, l.proc, l.Running, l.StartedAt
+	pb.ResumedFrom, pb.dir, pb.statusPath, pb.ipcPath = l.ResumedFrom, l.dir, l.statusPath, l.ipcPath
 }
 
 type playerExitedMsg struct {
@@ -75,12 +92,16 @@ type playerExitedMsg struct {
 }
 
 // chooseVideoFile picks the file to play: the one for the wanted episode if a
-// batch has it, otherwise the largest video
-func chooseVideoFile(t *torrent.Torrent, wantEpisode int) (*torrent.File, int) {
+// batch has it, otherwise the largest video. Episode numbers are converted to
+// the season's own numbering (see absolute.go).
+func chooseVideoFile(t *torrent.Torrent, wantEpisode int, numbering episodeNumbering) (*torrent.File, int) {
+	episodeOf := func(name string) int {
+		return numbering.toSeason(parseEpisode(name)).Episode
+	}
 	videos := tc.GetAllVideoFiles(t)
 	if wantEpisode > 0 {
 		for _, f := range videos {
-			if parseEpisode(path.Base(f.DisplayPath())).Episode == wantEpisode {
+			if episodeOf(path.Base(f.DisplayPath())) == wantEpisode {
 				return f, wantEpisode
 			}
 		}
@@ -89,9 +110,9 @@ func chooseVideoFile(t *torrent.Torrent, wantEpisode int) (*torrent.File, int) {
 	if f == nil {
 		return nil, 0
 	}
-	ep := parseEpisode(path.Base(f.DisplayPath())).Episode
+	ep := episodeOf(path.Base(f.DisplayPath()))
 	if ep == 0 {
-		ep = parseEpisode(t.Name()).Episode
+		ep = episodeOf(t.Name())
 	}
 	return f, ep
 }
@@ -124,19 +145,24 @@ func playerKind(player string) string {
 	return base
 }
 
-// startPlayback launches the player for pb
-func startPlayback(pb *playback, token bool) tea.Cmd {
+// startPlayback launches the player for pb. It runs off the UI goroutine, so
+// it works on a copy and hands the results back in playerStartedMsg for
+// Update to apply (the UI reads pb while rendering).
+func startPlayback(target *playback, token bool) tea.Cmd {
 	return func() tea.Msg {
+		launch := *target
+		pb := &launch
 		player, err := findPlayer()
 		if err != nil {
 			// Last resort: most browsers can at least play mp4/webm
 			browser.OpenURL(pb.URL)
 			pb.Player = "browser"
-			return playerStartedMsg{pb: pb, err: err}
+			return playerStartedMsg{pb: target, launch: pb, err: err}
 		}
 		pb.Player = playerKind(player)
 
-		if rec, ok := history.get(pb.InfoHash, pb.FilePath); ok && rec.resumable() {
+		// In a room the host decides where playback is
+		if rec, ok := history.get(pb.InfoHash, pb.FilePath); ok && rec.resumable() && pb.invite == nil {
 			pb.ResumedFrom = rec.Pos
 		}
 
@@ -147,12 +173,19 @@ func startPlayback(pb *playback, token bool) tea.Cmd {
 		switch pb.Player {
 		case "mpv":
 			if err := pb.prepareMPV(token); err != nil {
-				return playerStartedMsg{pb: pb, err: err}
+				return playerStartedMsg{pb: target, launch: pb, err: err}
 			}
+			pb.ipcPath = mpvIPCPath(pb.dir)
 			args = []string{
 				"--force-media-title=" + title,
 				"--script=" + filepath.Join(pb.dir, "sakuhaku.lua"),
 				"--cache=yes",
+				// Lets watch-together control this mpv
+				"--input-ipc-server=" + pb.ipcPath,
+			}
+			if pb.invite != nil {
+				// Guests wait paused until the host's position arrives
+				args = append(args, "--pause")
 			}
 			if pb.ResumedFrom > 0 {
 				args = append(args, fmt.Sprintf("--start=%.0f", pb.ResumedFrom))
@@ -177,13 +210,22 @@ func startPlayback(pb *playback, token bool) tea.Cmd {
 		cmd.Env = env
 		if err := cmd.Start(); err != nil {
 			pb.cleanup()
-			return playerStartedMsg{pb: pb, err: err}
+			return playerStartedMsg{pb: target, launch: pb, err: err}
 		}
 		pb.proc = cmd
 		pb.Running = true
 		pb.StartedAt = time.Now()
-		return playerStartedMsg{pb: pb}
+		return playerStartedMsg{pb: target, launch: pb}
 	}
+}
+
+// mpvIPCPath picks the control endpoint for an mpv instance: a socket in the
+// session's temp dir, or a uniquely named pipe on Windows
+func mpvIPCPath(dir string) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf(`\\.\pipe\sakuhaku-mpv-%d-%d`, os.Getpid(), time.Now().UnixNano())
+	}
+	return filepath.Join(dir, "mpv.sock")
 }
 
 // waitForPlayer reports when the player process exits

@@ -81,6 +81,10 @@ func (c *TorrentClient) Init() error {
 	}
 
 	cfg.DisableIPv6 = c.DisableIPV6
+	// Without this the library only uploads to peers that give something
+	// back, so finished torrents were never shared, and a watch-together host
+	// couldn't send the episode to its guests
+	cfg.Seed = c.Seed
 	if c.HTTPProxy != nil {
 		cfg.HTTPProxy = c.HTTPProxy
 	}
@@ -270,9 +274,15 @@ func (c *TorrentClient) StartServer() {
 	mux.HandleFunc("/stream", c.handler)
 	c.Server = &http.Server{Addr: fmt.Sprintf("localhost:%s", c.Port), Handler: mux}
 
+	// Bind before returning so a player launched right away can connect
+	ln, err := net.Listen("tcp", c.Server.Addr)
+	if err != nil {
+		// Don't take the whole TUI down, streaming just won't work
+		log.Println("stream server:", err)
+		return
+	}
 	go func() {
-		if err := c.Server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			// Don't take the whole TUI down, streaming just won't work
+		if err := c.Server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Println("stream server:", err)
 		}
 	}()
@@ -452,14 +462,20 @@ func (c *TorrentClient) AddAsync(source string, mode Mode) tea.Cmd {
 	return c.AddAsyncTagged(source, mode, nil)
 }
 
-// AddAsyncTagged is AddAsync with caller context returned in TorrentAddedMsg.Tag
-func (c *TorrentClient) AddAsyncTagged(source string, mode Mode, tag any) tea.Cmd {
+// AddAsyncTagged is AddAsync with caller context returned in TorrentAddedMsg.Tag.
+// peers (ip:port) are connected to directly, e.g. a watch-together host.
+func (c *TorrentClient) AddAsyncTagged(source string, mode Mode, tag any, peers ...string) tea.Cmd {
 	return func() tea.Msg {
 		t, err := c.addTorrentNoWait(source)
 		if err != nil {
 			return TorrentAddedMsg{Mode: mode, Error: err, Tag: tag}
 		}
 		c.track(t, mode)
+		for _, p := range peers {
+			if p != "" {
+				c.AddPeer(t.InfoHash().HexString(), p)
+			}
+		}
 		t, err = c.waitForInfo(t)
 		if err != nil {
 			return TorrentAddedMsg{Mode: mode, Error: err, Tag: tag}

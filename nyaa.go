@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -67,34 +68,22 @@ func (item NyaaItem) toTorrent(index int) Torrent {
 	}
 }
 
+// parseSizeString parses sizes like "1.5 GiB", "700MiB" or "1.37GB". Sites
+// mean binary units either way.
 func parseSizeString(sizeStr string) int64 {
-	sizeStr = strings.TrimSpace(sizeStr)
-	parts := strings.Fields(sizeStr)
-	if len(parts) != 2 {
+	m := reSize.FindStringSubmatch(strings.TrimSpace(sizeStr))
+	if m == nil {
 		return 0
 	}
-
-	value, err := strconv.ParseFloat(parts[0], 64)
+	value, err := strconv.ParseFloat(m[1], 64)
 	if err != nil {
 		return 0
 	}
-
-	unit := strings.ToUpper(parts[1])
-	multiplier := int64(1)
-
-	switch unit {
-	case "KIB":
-		multiplier = 1024
-	case "MIB":
-		multiplier = 1024 * 1024
-	case "GIB":
-		multiplier = 1024 * 1024 * 1024
-	case "TIB":
-		multiplier = 1024 * 1024 * 1024 * 1024
-	}
-
-	return int64(value * float64(multiplier))
+	multiplier := map[string]float64{"": 1, "B": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}[strings.ToUpper(m[2])]
+	return int64(value * multiplier)
 }
+
+var reSize = regexp.MustCompile(`(?i)^([\d.]+)\s*([KMGT]?)i?B?$`)
 
 func parseIntString(s string) int {
 	val, _ := strconv.Atoi(strings.TrimSpace(s))
@@ -179,22 +168,21 @@ func performTorrentSearch(titles ...string) tea.Cmd {
 			}
 		}
 
+		sources := enabledSources()
 		results := make(chan result)
 		for _, q := range queries {
-			go func(q string) {
-				t, err := searchAnimeTosho(q)
-				results <- result{t, err, "AnimeTosho"}
-			}(q)
-			go func(q string) {
-				t, err := searchNyaa(q)
-				results <- result{t, err, "nyaa (" + cfg.NyaaURL + ")"}
-			}(q)
+			for _, src := range sources {
+				go func(q string, src torrentSource) {
+					t, err := src.search(q)
+					results <- result{t, err, src.name}
+				}(q, src)
+			}
 		}
 
 		var combined []Torrent
 		var errs []string
 		dedupe := map[string]bool{}
-		for range 2 * len(queries) {
+		for range len(sources) * len(queries) {
 			r := <-results
 			if r.err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %v", r.source, r.err))

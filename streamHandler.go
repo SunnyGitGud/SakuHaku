@@ -7,19 +7,22 @@ import (
 	"github.com/anacrolix/torrent"
 	tea "github.com/charmbracelet/bubbletea"
 	tc "github.com/sunnygitgud/sakuhaku/torrentclient"
+	"github.com/sunnygitgud/sakuhaku/watchparty"
 )
 
 // streamContext is what we know about a torrent from where it was picked:
 // which anime, the user's list entry and the episode they were after
 type streamContext struct {
-	anime   *Anime
-	entry   *UserAnimeEntry
-	episode int
+	anime     *Anime
+	entry     *UserAnimeEntry
+	episode   int
+	numbering episodeNumbering
+	invite    *watchparty.Invite // joining a watch-together room
 }
 
 // currentStreamContext captures the anime/episode the torrent list is for
 func (m *model) currentStreamContext() *streamContext {
-	ctx := &streamContext{episode: m.epFilter}
+	ctx := &streamContext{episode: m.epFilter, numbering: m.currentNumbering()}
 	if m.selectedAnime != nil {
 		a := *m.selectedAnime
 		ctx.anime = &a
@@ -43,7 +46,16 @@ func (m *model) playTorrent(t *torrent.Torrent, ctx *streamContext) tea.Cmd {
 	if ctx == nil {
 		ctx = &streamContext{}
 	}
-	file, episode := chooseVideoFile(t, ctx.episode)
+	file, episode := chooseVideoFile(t, ctx.episode, ctx.numbering)
+	if inv := ctx.invite; inv != nil && inv.File != "" {
+		// Play exactly what the host is playing
+		for _, f := range t.Files() {
+			if f.DisplayPath() == inv.File {
+				file = f
+				break
+			}
+		}
+	}
 	if file == nil {
 		m.torrentClient.StartDownload(t.InfoHash().HexString())
 		m.statusMsg = "No video file found in torrent, downloading it instead (D to view)"
@@ -58,7 +70,13 @@ func (m *model) playTorrent(t *torrent.Torrent, ctx *streamContext) tea.Cmd {
 		Anime:    ctx.anime,
 		Entry:    ctx.entry,
 		Episode:  episode,
+		invite:   ctx.invite,
 	}
+	if ctx.invite != nil && ctx.invite.Episode > 0 {
+		pb.Episode = ctx.invite.Episode
+	}
+	// A new playback leaves any room the previous one was in
+	closeRoom := m.closeRoom()
 	m.streamURL = pb.URL
 	m.playback = pb
 
@@ -71,7 +89,7 @@ func (m *model) playTorrent(t *torrent.Torrent, ctx *streamContext) tea.Cmd {
 		m.viewport.SetContent(m.renderContent())
 		m.viewport.GotoTop()
 	}
-	return tea.Batch(startPlayback(pb, m.trackingEnabled()), m.startTicking())
+	return tea.Batch(closeRoom, startPlayback(pb, m.trackingEnabled()), m.startTicking())
 }
 
 func (m *model) trackingEnabled() bool {

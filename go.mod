@@ -3,6 +3,7 @@ module github.com/sunnygitgud/sakuhaku
 go 1.25.1
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/anacrolix/torrent v1.59.1
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.10
