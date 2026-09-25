@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -37,13 +36,18 @@ type userListMsg []UserAnimeEntry
 // OAuth Implementation
 func startOAuthFlow() tea.Cmd {
 	return func() tea.Msg {
+		if clientID == "" || clientSecret == "" {
+			return authErrorMsg{err: fmt.Errorf("ANILIST_CLIENT_ID and ANILIST_CLIENT_SECRET are not set (see README)")}
+		}
 		// Start local server to receive callback
 		codeChan := make(chan string, 1)
 		errChan := make(chan error, 1)
 
-		server := &http.Server{Addr: ":" + callbackPort}
+		// Own mux: registering on the default one twice (a login retry) panics
+		mux := http.NewServeMux()
+		server := &http.Server{Addr: "localhost:" + callbackPort, Handler: mux}
 
-		http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 			code := r.URL.Query().Get("code")
 			if code == "" {
 				errChan <- fmt.Errorf("no code received")
@@ -125,10 +129,6 @@ func exchangeCodeForToken(code string) (string, error) {
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// Log the response for debugging
-	fmt.Printf("Token exchange response: %+v\n", result)
-	fmt.Printf("HTTP Status: %d\n", resp.StatusCode)
-
 	// Check for error in response
 	if errMsg, ok := result["error"]; ok {
 		return "", fmt.Errorf("OAuth error: %v - %v", errMsg, result["error_description"])
@@ -163,7 +163,7 @@ func getUserInfo(token string) (string, int, error) {
 
 func fetchUserAnimeList(token string, userID int, status string) tea.Cmd {
 	return func() tea.Msg {
-		query := `
+		query := fmt.Sprintf(`
 		query ($userId: Int, $status: MediaListStatus) {
 			MediaListCollection(userId: $userId, type: ANIME, status: $status, sort: UPDATED_TIME_DESC) {
 				lists {
@@ -175,28 +175,13 @@ func fetchUserAnimeList(token string, userID int, status string) tea.Cmd {
 						score
 						updatedAt
 						media {
-							id
-							title {
-								romaji
-								english
-							}
-							format
-							status
-							episodes
-							averageScore
-							season
-							seasonYear
-							coverImage {
-								extraLarge
-								large
-							}
-							siteUrl
+							%s
 						}
 					}
 				}
 			}
 		}
-		`
+		`, mediaFields)
 
 		variables := map[string]interface{}{
 			"userId": userID,
@@ -215,37 +200,4 @@ func fetchUserAnimeList(token string, userID int, status string) tea.Cmd {
 
 		return userListMsg(entries)
 	}
-}
-
-func makeAuthenticatedRequest(token, query string, variables map[string]interface{}) (*AniListResponse, error) {
-	requestBody := map[string]interface{}{
-		"query":     query,
-		"variables": variables,
-	}
-
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", "https://graphql.anilist.co", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var result AniListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-
-	return &result, nil
 }

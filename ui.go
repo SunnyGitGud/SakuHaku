@@ -24,6 +24,7 @@ var (
 			BorderLeft(true).
 			Padding(0, 1)
 	spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	statusStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
 
 // Bubble Tea Implementation
@@ -31,6 +32,7 @@ func initialModel() *model {
 	var statusMsg string
 	client := tc.NewTorrentClient(tc.ClientName, "8888")
 	client.SetDownloadDir(defaultDownloadDir())
+	client.HTTPProxy = proxyFunc()
 	if err := client.Init(); err != nil {
 		statusMsg = fmt.Sprintf("Torrent client unavailable: %v", err)
 		client = nil
@@ -47,6 +49,7 @@ func initialModel() *model {
 		spinner:          s,
 		loading:          false,
 		statusMsg:        statusMsg,
+		torrentCtx:       make(map[string]*streamContext),
 	}
 
 	// Try to load saved token
@@ -72,9 +75,9 @@ func (m *model) Init() tea.Cmd {
 }
 
 // defaultDownloadDir is where full downloads (and stream buffers) are kept.
-// Override with SAKUHAKU_DOWNLOAD_DIR.
+// Override with -download-dir or SAKUHAKU_DOWNLOAD_DIR.
 func defaultDownloadDir() string {
-	dir := os.Getenv("SAKUHAKU_DOWNLOAD_DIR")
+	dir := cfg.DownloadDir
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -91,6 +94,9 @@ func defaultDownloadDir() string {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.wantPosters = m.wantPosters[:0]
 	model, cmd := m.update(msg)
+	if m.fitViewport() {
+		m.viewport.SetContent(m.renderContent())
+	}
 	// Rendering may have asked for posters that aren't loaded yet
 	if len(m.wantPosters) > 0 {
 		cmd = tea.Batch(cmd, posterCmds(m.wantPosters...))
@@ -150,37 +156,89 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if ctx, ok := msg.Tag.(*streamContext); ok && ctx != nil {
+			m.torrentCtx[msg.Torrent.InfoHash().HexString()] = ctx
+		}
+
 		if msg.Mode == tc.ModeDownload {
 			m.statusMsg = fmt.Sprintf("Downloading %s", msg.Torrent.Name())
 			return m, nil
 		}
 
-		vidfile := tc.GetLargestVideoFile(msg.Torrent)
-		if vidfile == nil {
-			m.torrentClient.StartDownload(msg.Torrent.InfoHash().HexString())
-			m.statusMsg = "No video file found in torrent, downloading it instead (D to view)"
-			return m, nil
-		}
-		m.streamURL = m.torrentClient.ServeTorrentEpisode(msg.Torrent, vidfile.DisplayPath())
-		m.statusMsg = "Streaming " + vidfile.DisplayPath()
-		return m, openVideoPlayer(m.streamURL)
+		ctx, _ := msg.Tag.(*streamContext)
+		return m, m.playTorrent(msg.Torrent, ctx)
 
 	case tc.TorrentProgressMsg:
 		m.ticking = false
 		m.refreshDownloads()
-		if m.mode == ModeDownloads && m.ready {
+		var trackCmd tea.Cmd
+		if pb := m.playback; pb != nil && pb.Running {
+			pb.readStatus()
+			trackCmd = m.maybeTrack(pb, false)
+		}
+		if (m.mode == ModeDownloads || m.mode == ModeStreaming) && m.ready {
 			m.viewport.SetContent(m.renderContent())
 		}
-		if len(m.downloads) > 0 {
-			return m, m.startTicking()
+		if len(m.downloads) > 0 || (m.playback != nil && m.playback.Running) {
+			return m, tea.Batch(trackCmd, m.startTicking())
 		}
-		return m, nil
+		return m, trackCmd
 
-	case videoPlayerOpenedMsg:
-		if msg.player == "browser" {
-			m.statusMsg = "No video player found (install mpv), opened stream in browser"
-		} else {
-			m.statusMsg = "Playing in " + msg.player
+	case playerStartedMsg:
+		switch {
+		case msg.pb.Player == "browser":
+			m.statusMsg = "No video player found (install mpv), opened the stream in your browser"
+		case msg.err != nil:
+			m.statusMsg = "Couldn't start player: " + msg.err.Error()
+		default:
+			m.statusMsg = "Playing in " + msg.pb.Player
+			if msg.pb.ResumedFrom > 0 {
+				m.statusMsg += " (resumed at " + formatClock(msg.pb.ResumedFrom) + ")"
+			}
+		}
+		if m.mode == ModeStreaming {
+			m.viewport.SetContent(m.renderContent())
+		}
+		if msg.err != nil || msg.pb.proc == nil {
+			return m, nil
+		}
+		return m, waitForPlayer(msg.pb)
+
+	case playerExitedMsg:
+		pb := msg.pb
+		pb.Running = false
+		pb.readStatus()
+		history.save(pb)
+		trackCmd := m.maybeTrack(pb, false)
+		pb.cleanup()
+		if pb == m.playback {
+			m.statusMsg = "Player closed"
+			if pb.Pos > 0 && !pb.EOF {
+				m.statusMsg += " at " + formatClock(pb.Pos) + ", w to resume"
+			}
+		}
+		if m.mode == ModeStreaming {
+			m.viewport.SetContent(m.renderContent())
+		}
+		return m, trackCmd
+
+	case updateProgressMsg:
+		text := ""
+		switch {
+		case msg.err != nil:
+			text = "AniList update failed: " + msg.err.Error()
+		case msg.skipped:
+			text = fmt.Sprintf("AniList already has episode %d of %s as watched", msg.progress, msg.title)
+		default:
+			text = fmt.Sprintf("✓ AniList: %s episode %d watched (%s)", msg.title, msg.progress, strings.ToLower(msg.status))
+			m.applyLocalProgress(msg.mediaID, msg.progress, msg.status)
+		}
+		m.statusMsg = text
+		if pb := m.playback; pb != nil && pb.Anime != nil && pb.Anime.ID == msg.mediaID {
+			pb.TrackMsg = text
+		}
+		if m.ready {
+			m.viewport.SetContent(m.renderContent())
 		}
 		return m, nil
 
@@ -208,10 +266,34 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loginMsg = fmt.Sprintf("Login failed: %v\nPress 'l' to retry or 's' to browse without login", msg.err)
 		return m, nil
 
+	case listPageMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.statusMsg = "Couldn't load list: " + msg.err.Error()
+			return m, nil
+		}
+		m.mode = ModeUserList
+		m.userEntries = msg.entries
+		m.userEntryCursor = 0
+		m.listOffset = 0
+		m.listPage = msg.page
+		m.listLastPage = msg.lastPage
+		m.listHasNext = msg.hasNext
+
+		if !m.ready {
+			m.viewport = viewport.New(80, 24)
+			m.ready = true
+		}
+		m.viewport.SetContent(m.renderContent())
+		m.viewport.GotoTop()
+		return m, nil
+
 	case userListMsg:
 		m.loading = false
 		m.mode = ModeUserList
 		m.userEntries = []UserAnimeEntry(msg)
+		m.userEntryCursor = min(m.userEntryCursor, max(0, len(m.userEntries)-1))
+		m.listPage, m.listLastPage, m.listHasNext = 0, 0, false
 
 		if !m.ready {
 			m.viewport = viewport.New(80, 24)
@@ -226,6 +308,10 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case animeSearchResultMsg:
 		m.loading = false
+		if msg.err != nil {
+			m.statusMsg = "Search failed: " + msg.err.Error()
+			return m, nil
+		}
 		m.anime = msg.anime
 		m.animeCursor = 0
 		m.animePage = msg.page
@@ -238,14 +324,20 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case torrentSearchResultMsg:
 		m.loading = false
+		if msg.err != nil {
+			m.statusMsg = "Torrent search failed: " + msg.err.Error() + " (try -nyaa with a mirror or -proxy)"
+		}
 		m.mode = ModeTorrents
-		m.torrents = []Torrent(msg)
-		m.torrentCursor = 0
-		m.torrentPage = 0
-		m.selectedTorrents = make(map[int]struct{})
-		if m.ready {
-			m.viewport.SetContent(m.renderContent())
-			m.viewport.GotoTop()
+		m.allTorrents = msg.torrents
+		m.epFilter = m.pendingEpFilter
+		m.pendingEpFilter = 0
+		m.applyTorrentFilters()
+		if m.epFilter > 0 && len(m.torrents) == 0 && len(m.allTorrents) > 0 {
+			m.statusMsg = fmt.Sprintf("Nothing found for episode %d, showing all", m.epFilter)
+			m.epFilter = 0
+			m.applyTorrentFilters()
+		} else if m.epFilter > 0 {
+			m.statusMsg = fmt.Sprintf("Showing your next episode (%d), E to show all", m.epFilter)
 		}
 		return m, nil
 
@@ -284,28 +376,41 @@ func (m *model) View() string {
 
 // UI Handlers
 func (m *model) handleWindowResize(msg tea.WindowSizeMsg) {
+	m.termWidth, m.termHeight = msg.Width, msg.Height
+	if !m.ready {
+		m.viewport = viewport.New(msg.Width, 1)
+		m.ready = true
+	}
+	m.viewport.Width = msg.Width
+	m.fitViewport()
+	// Re-render content with new dimensions (images will auto-resize)
+	m.viewport.SetContent(m.renderContent())
+}
+
+// fitViewport sizes the viewport to what the header and footer leave free.
+// Their heights differ between screens (the login screen has no title), so
+// this runs on every update rather than only on resize.
+func (m *model) fitViewport() bool {
+	if !m.ready || m.termHeight == 0 {
+		return false
+	}
 	headerHeight := lipgloss.Height(m.headerView())
 	footerHeight := lipgloss.Height(m.footerView())
-	verticalMargin := headerHeight + footerHeight
-
-	if !m.ready {
-		m.viewport = viewport.New(msg.Width, msg.Height-verticalMargin)
-		m.viewport.YPosition = headerHeight
-		m.viewport.SetContent(m.renderContent())
-		m.ready = true
-	} else {
-		m.viewport.Width = msg.Width
-		m.viewport.Height = msg.Height - verticalMargin
-
-		// Re-render content with new dimensions (images will auto-resize)
-		m.viewport.SetContent(m.renderContent())
+	h := max(1, m.termHeight-headerHeight-footerHeight)
+	if h == m.viewport.Height && m.viewport.YPosition == headerHeight {
+		return false
 	}
+	m.viewport.Height = h
+	m.viewport.YPosition = headerHeight
+	return true
 }
 
 func (m *model) headerView() string {
 	var title string
 	if m.searchMode {
 		title = titleStyle.Render(fmt.Sprintf("Search Anime: %s_", m.searchInput))
+	} else if m.epInputMode {
+		title = titleStyle.Render(fmt.Sprintf("Episode (empty = any): %s_", m.epInput))
 	} else {
 		switch m.mode {
 		case ModeUserList:
@@ -316,6 +421,8 @@ func (m *model) headerView() string {
 			title = titleStyle.Render("📦 Torrent Results")
 		case ModeDownloads:
 			title = titleStyle.Render("⬇ Download Manager")
+		case ModeStreaming:
+			title = titleStyle.Render("▶ Now Streaming")
 		}
 	}
 	line := strings.Repeat("─", max(0, m.viewport.Width-lipgloss.Width(title)))
@@ -330,6 +437,9 @@ func (m *model) footerView() string {
 		switch m.mode {
 		case ModeUserList:
 			pageInfo = fmt.Sprintf("%d anime | Tab: switch list | s: search | r: refresh | D: downloads | L: logout | Enter: torrents | q: quit", len(m.userEntries))
+			if m.listPage > 0 {
+				pageInfo = fmt.Sprintf("Page %d/%d | n/p: page | ", m.listPage, max(m.listPage, m.listLastPage)) + pageInfo
+			}
 		case ModeAnimeSearch:
 			pageInfo = fmt.Sprintf("Page %d/%d | s: search | n/p: page | Enter: torrents | D: downloads | Esc: back | q: quit",
 				m.animePage+1, m.animeTotalPages)
@@ -337,12 +447,14 @@ func (m *model) footerView() string {
 			perPage := 20
 			startIdx := m.torrentPage*perPage + 1
 			endIdx := min(startIdx+len(m.visibleTorrents(perPage))-1, len(m.torrents))
-			pageInfo = fmt.Sprintf("Page %d/%d | %d-%d of %d | Enter: stream | d: download | Space: mark | D: downloads | Esc: back",
+			pageInfo = fmt.Sprintf("Page %d/%d | %d-%d of %d | Enter: stream | d: download | Space: mark | n/p: page | D: downloads | Esc: back",
 				m.torrentPage+1, m.totalTorrentPages(perPage), startIdx, endIdx, len(m.torrents))
+		case ModeStreaming:
+			pageInfo = "w: (re)open player | s: stop player | m: mark watched | d: keep file | D: downloads | Esc: back"
 		case ModeDownloads:
 			pageInfo = "Enter: watch | Space: pause | d: keep | x: remove | X: delete files | o: folder | Esc: back"
 		}
-		if summary := m.downloadSummary(); summary != "" && m.mode != ModeDownloads {
+		if summary := m.downloadSummary(); summary != "" && m.mode != ModeDownloads && m.mode != ModeStreaming {
 			pageInfo = summary + " | " + pageInfo
 		}
 	}
@@ -351,13 +463,16 @@ func (m *model) footerView() string {
 	width := m.viewport.Width
 	pageInfo = ansi.Truncate(pageInfo, max(0, width-4), "…")
 	info := infoStyle.Render(pageInfo)
+	line := strings.Repeat("─", max(0, width-lipgloss.Width(info)))
+	footer := lipgloss.JoinHorizontal(lipgloss.Center, line, info)
 
+	// The status line is always there (blank when idle) so the footer height,
+	// and with it the viewport size, never changes
 	status := ""
 	if m.statusMsg != "" {
-		status = ansi.Truncate(" "+m.statusMsg+" ", max(0, width-lipgloss.Width(info)-2), "…")
+		status = statusStyle.Render(ansi.Truncate(" "+m.statusMsg, max(0, width), "…"))
 	}
-	line := status + strings.Repeat("─", max(0, width-lipgloss.Width(info)-lipgloss.Width(status)))
-	return lipgloss.JoinHorizontal(lipgloss.Center, line, info)
+	return status + "\n" + footer
 }
 
 // downloadSummary is a short "⬇ 2 · 3.1 MB/s" note for the footer
@@ -391,4 +506,19 @@ func (m *model) visibleTorrents(perPage int) []Torrent {
 		return nil
 	}
 	return m.torrents[start:end]
+}
+
+// applyLocalProgress mirrors a successful AniList update in the loaded list so
+// the UI doesn't need a refetch
+func (m *model) applyLocalProgress(mediaID, progress int, status string) {
+	for i := range m.userEntries {
+		if m.userEntries[i].Media.ID == mediaID && m.userEntries[i].Status != "" {
+			m.userEntries[i].Progress = progress
+			m.userEntries[i].Status = status
+		}
+	}
+	if e := m.selectedEntry; e != nil && m.selectedAnime != nil && m.selectedAnime.ID == mediaID {
+		e.Progress = progress
+		e.Status = status
+	}
 }

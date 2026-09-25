@@ -43,6 +43,8 @@ type TorrentClient struct {
 	Server      *http.Server
 	Torrents    []*torrent.Torrent
 	DisableIPV6 bool
+	// HTTPProxy, when set, is used for HTTP tracker announces
+	HTTPProxy func(*http.Request) (*url.URL, error)
 
 	// Download manager state, see manager.go
 	mu      sync.Mutex
@@ -79,6 +81,9 @@ func (c *TorrentClient) Init() error {
 	}
 
 	cfg.DisableIPv6 = c.DisableIPV6
+	if c.HTTPProxy != nil {
+		cfg.HTTPProxy = c.HTTPProxy
+	}
 
 	// Get open port
 	if c.TorrentPort < 5 {
@@ -116,6 +121,14 @@ func (c *TorrentClient) Init() error {
 	cfg.DefaultStorage = stor
 
 	client, err := torrent.NewClient(cfg)
+	if err != nil && !cfg.DisableIPv6 {
+		// Systems with IPv6 turned off (some WSL/Docker/Linux setups) fail
+		// to open the IPv6 listener; carry on with IPv4 only
+		log.Println("torrent client: retrying without IPv6:", err)
+		cfg.DisableIPv6 = true
+		c.DisableIPV6 = true
+		client, err = torrent.NewClient(cfg)
+	}
 	if err != nil {
 		return fmt.Errorf("error creating torrent client: %v", err)
 	}
@@ -420,6 +433,8 @@ type TorrentAddedMsg struct {
 	Torrent *torrent.Torrent
 	Mode    Mode
 	Error   error
+	// Tag is whatever was passed to AddAsyncTagged, handed back untouched
+	Tag any
 }
 
 // TorrentProgressMsg is sent periodically to refresh download stats
@@ -434,20 +449,25 @@ func (c *TorrentClient) AddTorrentAsync(source string) tea.Cmd {
 // it shows up while metadata is being fetched) and reports back once it is
 // ready. ModeDownload torrents are fetched in full.
 func (c *TorrentClient) AddAsync(source string, mode Mode) tea.Cmd {
+	return c.AddAsyncTagged(source, mode, nil)
+}
+
+// AddAsyncTagged is AddAsync with caller context returned in TorrentAddedMsg.Tag
+func (c *TorrentClient) AddAsyncTagged(source string, mode Mode, tag any) tea.Cmd {
 	return func() tea.Msg {
 		t, err := c.addTorrentNoWait(source)
 		if err != nil {
-			return TorrentAddedMsg{Mode: mode, Error: err}
+			return TorrentAddedMsg{Mode: mode, Error: err, Tag: tag}
 		}
 		c.track(t, mode)
 		t, err = c.waitForInfo(t)
 		if err != nil {
-			return TorrentAddedMsg{Mode: mode, Error: err}
+			return TorrentAddedMsg{Mode: mode, Error: err, Tag: tag}
 		}
 		if mode == ModeDownload {
 			t.DownloadAll()
 		}
-		return TorrentAddedMsg{Torrent: t, Mode: mode}
+		return TorrentAddedMsg{Torrent: t, Mode: mode, Tag: tag}
 	}
 }
 

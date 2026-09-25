@@ -3,3 +3,5 @@
 .anilist_token
 credentials.go
 debug.log
+/sakuhaku
+*.exe

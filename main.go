@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
@@ -8,16 +9,18 @@ import (
 	"github.com/joho/godotenv"
 )
 
-func init() {
-	err := godotenv.Load()
-	if err != nil {
-		fmt.Printf("Warning: Could not load .env file: %v\n", err)
-	} else {
-		fmt.Println("✓ .env file loaded successfully")
-	}
-}
-
 func main() {
+	// A .env file is optional; real environment variables take precedence
+	_ = godotenv.Load()
+
+	if err := parseFlags(os.Args[1:]); err != nil {
+		if err == flag.ErrHelp {
+			return
+		}
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
 	m := initialModel()
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()

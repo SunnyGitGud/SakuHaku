@@ -332,3 +332,85 @@ func FormatDuration(d time.Duration) string {
 		return fmt.Sprintf("%ds", s)
 	}
 }
+
+// PieceCell summarises a run of pieces for display
+type PieceCell uint8
+
+const (
+	PieceMissing  PieceCell = iota
+	PieceWanted             // prioritised, nothing received yet
+	PiecePartial            // some data received
+	PieceComplete           // verified
+)
+
+// FileStats describes download progress of a single file in a torrent
+type FileStats struct {
+	Path      string
+	Length    int64
+	Completed int64
+	// Pieces is the file's piece map squeezed into a fixed number of cells
+	Pieces []PieceCell
+}
+
+// FileStats reports progress for one file, with its piece map summarised into
+// the given number of cells
+func (c *TorrentClient) FileStats(infoHash, displayPath string, cells int) (FileStats, error) {
+	t, err := c.Torrent(infoHash)
+	if err != nil {
+		return FileStats{}, err
+	}
+	if t.Info() == nil {
+		return FileStats{}, fmt.Errorf("metadata not available yet")
+	}
+
+	var f *torrent.File
+	for _, candidate := range t.Files() {
+		if candidate.DisplayPath() == displayPath {
+			f = candidate
+			break
+		}
+	}
+	if f == nil {
+		return FileStats{}, fmt.Errorf("no file %q in torrent", displayPath)
+	}
+
+	fs := FileStats{Path: displayPath, Length: f.Length(), Completed: f.BytesCompleted()}
+	begin, end := f.BeginPieceIndex(), f.EndPieceIndex()
+	n := end - begin
+	if cells <= 0 || n <= 0 {
+		return fs, nil
+	}
+
+	fs.Pieces = make([]PieceCell, cells)
+	for cell := range cells {
+		lo := begin + cell*n/cells
+		hi := begin + (cell+1)*n/cells
+		if hi <= lo {
+			hi = lo + 1
+		}
+		complete, any, wanted := true, false, false
+		for i := lo; i < hi && i < end; i++ {
+			ps := t.PieceState(i)
+			if ps.Complete {
+				any = true
+				continue
+			}
+			complete = false
+			if ps.Partial {
+				any = true
+			}
+			if ps.Priority != torrent.PiecePriorityNone {
+				wanted = true
+			}
+		}
+		switch {
+		case complete:
+			fs.Pieces[cell] = PieceComplete
+		case any:
+			fs.Pieces[cell] = PiecePartial
+		case wanted:
+			fs.Pieces[cell] = PieceWanted
+		}
+	}
+	return fs, nil
+}

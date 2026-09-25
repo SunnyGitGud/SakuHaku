@@ -1,10 +1,7 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,9 +21,8 @@ type animeSearchResultMsg struct {
 	anime      []Anime
 	totalPages int
 	page       int
+	err        error
 }
-
-type torrentSearchResultMsg []Torrent
 
 func performAnimeSearch(query string, page int) tea.Cmd {
 	return func() tea.Msg {
@@ -36,8 +32,7 @@ func performAnimeSearch(query string, page int) tea.Cmd {
 			"perPage": 20,
 		}
 
-		requestBody := map[string]any{
-			"query": `
+		query := fmt.Sprintf(`
 			query ($search: String, $page: Int, $perPage: Int) {
 				Page(page: $page, perPage: $perPage) {
 					pageInfo {
@@ -48,43 +43,14 @@ func performAnimeSearch(query string, page int) tea.Cmd {
 						hasNextPage
 					}
 					media(search: $search, type: ANIME, sort: POPULARITY_DESC) {
-						id
-						title {
-							romaji
-							english
-						}
-						format
-						status
-						episodes
-						averageScore
-						season
-						seasonYear
-						coverImage {
-							extraLarge
-							large
-						}
-						siteUrl
+						%s
 					}
 				}
-			}
-			`,
-			"variables": variables,
-		}
+			}`, mediaFields)
 
-		jsonData, err := json.Marshal(requestBody)
+		result, err := makePublicRequest(query, variables)
 		if err != nil {
-			return animeSearchResultMsg{anime: nil}
-		}
-
-		resp, err := http.Post("https://graphql.anilist.co", "application/json", bytes.NewBuffer(jsonData))
-		if err != nil {
-			return animeSearchResultMsg{anime: nil}
-		}
-		defer resp.Body.Close()
-
-		var result AniListResponse
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return animeSearchResultMsg{anime: nil}
+			return animeSearchResultMsg{err: err, page: page - 1}
 		}
 
 		return animeSearchResultMsg{
@@ -93,9 +59,4 @@ func performAnimeSearch(query string, page int) tea.Cmd {
 			page:       page - 1,
 		}
 	}
-}
-
-// Search both AnimeTosho and Nyaa
-func performTorrentSearch(query string) tea.Cmd {
-	return performCombinedSearch(query)
 }

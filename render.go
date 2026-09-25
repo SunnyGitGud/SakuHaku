@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -44,6 +45,8 @@ func (m *model) renderContent() string {
 		return m.renderTorrentContent()
 	case ModeDownloads:
 		return m.renderDownloadsContent()
+	case ModeStreaming:
+		return m.renderStreamingContent()
 	}
 	return ""
 }
@@ -288,14 +291,23 @@ func (m *model) renderTorrentContent() string {
 	perPage := 20
 	visible := m.visibleTorrents(perPage)
 
-	if len(visible) == 0 {
-		return "No torrents found for this anime."
-	}
-
 	var sb strings.Builder
 
+	// Always torrentsHeaderLines tall so cursor scrolling lines up
+	title := "🎬 Torrents"
 	if m.selectedAnime != nil {
-		sb.WriteString(fmt.Sprintf("🎬 Torrents for: %s\n\n", animeTitle(m.selectedAnime)))
+		title += " for: " + animeTitle(m.selectedAnime)
+	}
+	sb.WriteString(ansi.Truncate(title, m.viewport.Width, "…") + "\n")
+	sb.WriteString(dimStyle.Render(ansi.Truncate(m.filterSummary(), m.viewport.Width, "…")) + "\n\n")
+
+	if len(visible) == 0 {
+		if len(m.allTorrents) > 0 {
+			sb.WriteString("No torrents match these filters. E clears the episode filter, f cycles seeders.")
+		} else {
+			sb.WriteString("No torrents found for this anime.")
+		}
+		return sb.String()
 	}
 
 	for i, t := range visible {
@@ -316,21 +328,30 @@ func (m *model) renderTorrentContent() string {
 			sourceBadge = "🐱"
 		}
 
-		title := ansi.Truncate(t.Title, max(10, m.viewport.Width-12), "…")
+		name := ansi.Truncate(t.Title, max(10, m.viewport.Width-12), "…")
 		if m.torrentCursor == i {
-			title = selectedStyle.Render(title)
+			name = selectedStyle.Render(name)
 		}
 
-		line := fmt.Sprintf("%s [%s] %s %s\n   💾 %s | 🌱 %s | 🧲 %s | 📤 %s\n\n",
-			cursor, checked, sourceBadge, title,
+		ep := ""
+		if label := parseEpisode(t.Title).Label(); label != "" {
+			ep = " | 🎞 " + label
+		}
+
+		line := fmt.Sprintf("%s [%s] %s %s\n   💾 %s | 🌱 %s | 🧲 %s%s | 📤 %s\n\n",
+			cursor, checked, sourceBadge, name,
 			formatBytes(t.TotalSize),
 			toString(t.Seeders),
 			toString(t.Leechers),
+			ep,
 			hyperlink("magnet", t.MagnetURI))
 		sb.WriteString(line)
 	}
 	return sb.String()
 }
+
+// torrentsHeaderLines is how many lines sit above the first torrent result
+const torrentsHeaderLines = 3
 
 // downloadsHeaderLines is how many lines sit above the first download entry
 const downloadsHeaderLines = 3
@@ -415,4 +436,122 @@ func stateStyle(s tc.State) lipgloss.Style {
 		color = "42"
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+}
+
+var (
+	pieceStyles = map[tc.PieceCell]lipgloss.Style{
+		tc.PieceComplete: lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
+		tc.PiecePartial:  lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
+		tc.PieceWanted:   lipgloss.NewStyle().Foreground(lipgloss.Color("39")),
+		tc.PieceMissing:  lipgloss.NewStyle().Foreground(lipgloss.Color("238")),
+	}
+	pieceGlyphs = map[tc.PieceCell]string{
+		tc.PieceComplete: "█",
+		tc.PiecePartial:  "▓",
+		tc.PieceWanted:   "▒",
+		tc.PieceMissing:  "░",
+	}
+	labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Width(12)
+)
+
+func (m *model) renderStreamingContent() string {
+	pb := m.playback
+	if pb == nil {
+		return dimStyle.Render("Nothing is streaming. Pick a torrent and press Enter.")
+	}
+	width := max(30, m.viewport.Width)
+	barWidth := max(10, width-14)
+
+	var sb strings.Builder
+	row := func(label, value string) {
+		sb.WriteString(labelStyle.Render(label) + ansi.Truncate(value, width-12, "…") + "\n")
+	}
+
+	sb.WriteString(selectedStyle.Render(ansi.Truncate("▶ "+pb.Title(), width, "…")) + "\n\n")
+
+	playerState := "not running"
+	switch {
+	case pb.Running && pb.Paused:
+		playerState = pb.Player + " · paused"
+	case pb.Running:
+		playerState = pb.Player + " · playing"
+	case pb.Player != "":
+		playerState = pb.Player + " · closed (w to reopen)"
+	}
+	row("Player", playerState)
+	row("File", path.Base(pb.FilePath))
+	row("Torrent", pb.Release)
+
+	// Playback position, only known with mpv (via the Lua script)
+	var posFrac float64 = -1
+	if pb.Duration > 0 {
+		posFrac = max(0, min(1, pb.Pos/pb.Duration))
+		row("Playback", progressBar(posFrac, barWidth-16)+"  "+formatClock(pb.Pos)+" / "+formatClock(pb.Duration))
+	} else if pb.Player == "mpv" {
+		row("Playback", dimStyle.Render("waiting for mpv..."))
+	} else if pb.Player != "" {
+		row("Playback", dimStyle.Render("position is only reported by mpv"))
+	}
+
+	if m.torrentClient != nil {
+		fs, err := m.torrentClient.FileStats(pb.InfoHash, pb.FilePath, barWidth)
+		if err != nil {
+			row("Buffered", dimStyle.Render(err.Error()))
+		} else {
+			frac := 0.0
+			if fs.Length > 0 {
+				frac = float64(fs.Completed) / float64(fs.Length)
+			}
+			row("Buffered", fmt.Sprintf("%.1f%%  %s / %s", frac*100, tc.FormatBytes(fs.Completed), tc.FormatBytes(fs.Length)))
+
+			var bar strings.Builder
+			for _, c := range fs.Pieces {
+				bar.WriteString(pieceStyles[c].Render(pieceGlyphs[c]))
+			}
+			row("Pieces", bar.String())
+			if posFrac >= 0 && len(fs.Pieces) > 0 {
+				at := min(len(fs.Pieces)-1, int(posFrac*float64(len(fs.Pieces))))
+				row("", strings.Repeat(" ", at)+selectedStyle.Render("▲"))
+
+				// How much is ready to play from the current position
+				ahead := 0
+				for i := at; i < len(fs.Pieces) && fs.Pieces[i] == tc.PieceComplete; i++ {
+					ahead++
+				}
+				readySec := float64(ahead) / float64(len(fs.Pieces)) * pb.Duration
+				row("Ready ahead", formatClock(readySec))
+			}
+		}
+
+		for _, d := range m.downloads {
+			if d.InfoHash == pb.InfoHash {
+				row("Speed", fmt.Sprintf("↓ %s  ↑ %s", tc.FormatSpeed(int64(d.DownRate)), tc.FormatSpeed(int64(d.UpRate))))
+				row("Peers", fmt.Sprintf("%d connected (%d seeds)", d.Peers, d.Seeders))
+				row("Swarm", fmt.Sprintf("%s · %.1f%% of %s", d.State, d.Progress*100, tc.FormatBytes(d.Size)))
+				break
+			}
+		}
+	}
+
+	sb.WriteString("\n")
+	tracking := pb.TrackMsg
+	if tracking == "" {
+		switch {
+		case !m.trackingEnabled():
+			tracking = dimStyle.Render("off (log in to sync progress)")
+		case pb.Episode <= 0 || pb.Anime == nil:
+			tracking = dimStyle.Render("unknown episode, m marks it manually")
+		default:
+			tracking = fmt.Sprintf("episode %d will be marked watched at %d%%", pb.Episode, int(watchedThreshold*100))
+		}
+	}
+	row("AniList", tracking)
+	row("Stream URL", hyperlink(pb.URL, pb.URL))
+
+	sb.WriteString("\n" + dimStyle.Render("Legend: ") +
+		pieceStyles[tc.PieceComplete].Render("█ have  ") +
+		pieceStyles[tc.PiecePartial].Render("▓ downloading  ") +
+		pieceStyles[tc.PieceWanted].Render("▒ queued  ") +
+		pieceStyles[tc.PieceMissing].Render("░ missing"))
+	return sb.String()
 }
