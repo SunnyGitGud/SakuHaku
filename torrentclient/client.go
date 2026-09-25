@@ -1,18 +1,22 @@
 package torrentclient
 
 import (
+	"context"
 	"fmt"
-	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anacrolix/torrent"
+	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -20,6 +24,9 @@ import (
 const (
 	InternalStreamPort = "8888"
 	ClientName         = "anilist-torrent-browser"
+
+	// MetadataTimeout bounds how long we wait for a magnet's metadata before giving up
+	MetadataTimeout = 2 * time.Minute
 )
 
 // Torrent Client
@@ -36,6 +43,11 @@ type TorrentClient struct {
 	Server      *http.Server
 	Torrents    []*torrent.Torrent
 	DisableIPV6 bool
+
+	// Download manager state, see manager.go
+	mu      sync.Mutex
+	tracked map[metainfo.Hash]*tracked
+	order   []metainfo.Hash
 }
 
 // NewTorrentClient creates a new torrent client instance
@@ -45,6 +57,7 @@ func NewTorrentClient(name string, port string) *TorrentClient {
 		Port:     port,
 		NoServer: false,
 		Seed:     true,
+		tracked:  make(map[metainfo.Hash]*tracked),
 	}
 }
 
@@ -123,12 +136,10 @@ func getMetadataDir(metadataDir, downloadDir string) (storage.ClientImpl, error)
 		return storage.NewMMap(downloadDir), nil
 	}
 
-	tstor := storage.NewMMapWithCompletion(downloadDir, mstor)
-	if err != nil {
-		return nil, err
-	}
-
-	return tstor, nil
+	// Plain file storage keeps downloads as normal files under
+	// downloadDir/<torrent name>, which the download manager relies on when
+	// deleting data, and avoids mmap faults on large files.
+	return storage.NewFileWithCompletion(downloadDir, mstor), nil
 }
 
 // getStorage creates and returns the storage directory path
@@ -157,66 +168,74 @@ func (c *TorrentClient) getStorage() (string, error) {
 
 // Adding Torrents
 
-// AddTorrent adds a torrent from magnet, URL, or file
+// AddTorrent adds a torrent from magnet, URL, or file and waits for its metadata
 func (c *TorrentClient) AddTorrent(tor string) (*torrent.Torrent, error) {
-	if strings.HasPrefix(tor, "magnet") {
-		return c.AddMagnet(tor)
-	} else if strings.Contains(tor, "http") {
-		return c.AddTorrentURL(tor)
-	} else {
-		return c.AddTorrentFile(tor)
+	t, err := c.addTorrentNoWait(tor)
+	if err != nil {
+		return nil, err
+	}
+	return c.waitForInfo(t)
+}
+
+// addTorrentNoWait registers a torrent with the client without waiting for metadata
+func (c *TorrentClient) addTorrentNoWait(tor string) (*torrent.Torrent, error) {
+	switch {
+	case strings.HasPrefix(tor, "magnet"):
+		return c.Client.AddMagnet(tor)
+	case strings.HasPrefix(tor, "http://"), strings.HasPrefix(tor, "https://"):
+		return c.addTorrentURLNoWait(tor)
+	default:
+		return c.Client.AddTorrentFromFile(tor)
+	}
+}
+
+// waitForInfo blocks until metadata arrives, dropping the torrent on timeout
+func (c *TorrentClient) waitForInfo(t *torrent.Torrent) (*torrent.Torrent, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), MetadataTimeout)
+	defer cancel()
+	select {
+	case <-t.GotInfo():
+		return t, nil
+	case <-t.Closed():
+		return nil, fmt.Errorf("torrent was removed before metadata arrived")
+	case <-ctx.Done():
+		c.forget(t.InfoHash())
+		t.Drop()
+		return nil, fmt.Errorf("timed out after %s waiting for torrent metadata (no peers?)", MetadataTimeout)
 	}
 }
 
 // AddMagnet adds a torrent from a magnet link
 func (c *TorrentClient) AddMagnet(magnet string) (*torrent.Torrent, error) {
-	t, err := c.Client.AddMagnet(magnet)
-	if err != nil {
-		return nil, err
-	}
-	<-t.GotInfo()
-	return t, nil
+	return c.AddTorrent(magnet)
 }
 
 // AddTorrentFile adds a torrent from a file path
 func (c *TorrentClient) AddTorrentFile(file string) (*torrent.Torrent, error) {
-	t, err := c.Client.AddTorrentFromFile(file)
-	if err != nil {
-		return nil, err
-	}
-	<-t.GotInfo()
-	return t, nil
+	return c.AddTorrent(file)
 }
 
 // AddTorrentURL adds a torrent from a URL
 func (c *TorrentClient) AddTorrentURL(url string) (*torrent.Torrent, error) {
-	resp, err := http.Get(url)
+	return c.AddTorrent(url)
+}
+
+func (c *TorrentClient) addTorrentURLNoWait(u string) (*torrent.Torrent, error) {
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Get(u)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
-	fname := path.Base(url)
-	tmp := os.TempDir()
-	fpath := filepath.Join(tmp, fname)
-
-	file, err := os.Create(fpath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	_, err = io.Copy(file, resp.Body)
-	if err != nil {
-		return nil, err
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching torrent file: %s", resp.Status)
 	}
 
-	t, err := c.Client.AddTorrentFromFile(file.Name())
+	mi, err := metainfo.Load(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parsing torrent file: %w", err)
 	}
-	<-t.GotInfo()
-	return t, nil
+	return c.Client.AddTorrent(mi)
 }
 
 // DownloadTorrent adds a torrent and marks it for complete download
@@ -225,6 +244,7 @@ func (c *TorrentClient) DownloadTorrent(torrent string) error {
 	if err != nil {
 		return err
 	}
+	c.track(t, ModeDownload)
 	t.DownloadAll()
 	return nil
 }
@@ -233,87 +253,92 @@ func (c *TorrentClient) DownloadTorrent(torrent string) error {
 
 // StartServer starts the HTTP streaming server
 func (c *TorrentClient) StartServer() {
-	port := fmt.Sprintf(":%s", c.Port)
-	c.Server = &http.Server{Addr: port}
-	http.HandleFunc("/stream", c.handler)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/stream", c.handler)
+	c.Server = &http.Server{Addr: fmt.Sprintf("localhost:%s", c.Port), Handler: mux}
 
 	go func() {
-		if err := c.Server.ListenAndServe(); err != nil {
-			if err == http.ErrServerClosed {
-				return
-			} else {
-				log.Fatal(err)
-			}
+		if err := c.Server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			// Don't take the whole TUI down, streaming just won't work
+			log.Println("stream server:", err)
 		}
 	}()
 }
 
 // handler handles HTTP streaming requests
 func (c *TorrentClient) handler(w http.ResponseWriter, r *http.Request) {
-	ts := c.Client.Torrents()
 	queries := r.URL.Query()
-	hash := queries.Get("hash")
-	fpath := queries.Get("filepath")
-
-	// Clean input
-	hash = strings.TrimSpace(strings.ReplaceAll(hash, "\n", ""))
-	fpath = strings.TrimSpace(strings.ReplaceAll(fpath, "\n", ""))
+	hash := strings.TrimSpace(queries.Get("hash"))
+	fpath := strings.TrimSpace(queries.Get("filepath"))
 
 	if hash == "" {
-		http.Error(w, http.StatusText(400), http.StatusBadRequest)
-		log.Println("server handler: hash query is empty")
+		http.Error(w, "missing hash", http.StatusBadRequest)
 		return
 	}
 
-	var targetTorrent *torrent.Torrent
-	for _, t := range ts {
-		<-t.GotInfo()
-		if t.InfoHash().String() == hash {
-			targetTorrent = t
-			break
-		}
-	}
-
-	if targetTorrent == nil {
-		http.Error(w, http.StatusText(500), http.StatusInternalServerError)
-		log.Println("server handler: couldn't find torrent by infohash")
+	var ih metainfo.Hash
+	if err := ih.FromHexString(hash); err != nil {
+		http.Error(w, "invalid hash", http.StatusBadRequest)
 		return
 	}
 
-	fileCount := len(targetTorrent.Files())
+	targetTorrent, ok := c.Client.Torrent(ih)
+	if !ok {
+		http.Error(w, "torrent not found", http.StatusNotFound)
+		return
+	}
+
+	select {
+	case <-targetTorrent.GotInfo():
+	case <-r.Context().Done():
+		return
+	}
+
+	files := targetTorrent.Files()
 	var targetFile *torrent.File
-
-	if fileCount == 1 {
-		targetFile = targetTorrent.Files()[0]
-	} else if fpath != "" && fileCount > 1 {
-		for _, f := range targetTorrent.Files() {
+	switch {
+	case fpath != "":
+		for _, f := range files {
 			if f.DisplayPath() == fpath {
 				targetFile = f
 				break
 			}
 		}
+	case len(files) == 1:
+		targetFile = files[0]
+	default:
+		targetFile = GetLargestVideoFile(targetTorrent)
 	}
 
 	if targetFile == nil {
-		http.Error(w, http.StatusText(500), http.StatusInternalServerError)
-		log.Println("server handler: couldn't find torrent file requested")
+		http.Error(w, "file not found in torrent", http.StatusNotFound)
 		return
 	}
 
-	w.Header().Set("Content-Type", "video/mp4")
-	http.ServeContent(w, r, targetFile.DisplayPath(), time.Unix(targetFile.Torrent().Metainfo().CreationDate, 0), targetFile.NewReader())
+	reader := targetFile.NewReader()
+	defer reader.Close()
+	// Prioritise pieces around the playback position and keep a buffer ahead
+	reader.SetResponsive()
+	reader.SetReadahead(targetFile.Length() / 100)
+
+	ctype := mime.TypeByExtension(path.Ext(targetFile.DisplayPath()))
+	if ctype == "" {
+		ctype = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ctype)
+	http.ServeContent(w, r, targetFile.DisplayPath(), time.Unix(targetTorrent.Metainfo().CreationDate, 0), reader)
 }
 
 // ServeTorrent generates a streaming link for a torrent
 func (c *TorrentClient) ServeTorrent(t *torrent.Torrent) string {
-	mh := t.InfoHash().String()
+	mh := t.InfoHash().HexString()
 	return fmt.Sprintf("http://localhost:%s/stream?hash=%s", c.Port, mh)
 }
 
 // ServeTorrentEpisode generates a streaming link for a specific file
 func (c *TorrentClient) ServeTorrentEpisode(t *torrent.Torrent, filePath string) string {
-	mh := t.InfoHash().String()
-	return fmt.Sprintf("http://localhost:%s/stream?hash=%s&filepath=%s", c.Port, mh, filePath)
+	mh := t.InfoHash().HexString()
+	return fmt.Sprintf("http://localhost:%s/stream?hash=%s&filepath=%s", c.Port, mh, url.QueryEscape(filePath))
 }
 
 // Torrent Management
@@ -336,11 +361,18 @@ func (c *TorrentClient) FindByInfoHash(infoHash string) (*torrent.Torrent, error
 
 // DropTorrent removes a torrent from the client
 func (c *TorrentClient) DropTorrent(t *torrent.Torrent) {
+	c.forget(t.InfoHash())
 	t.Drop()
 }
 
 // Close stops the client and closes all connections
 func (c *TorrentClient) Close() []error {
+	if c.Server != nil {
+		c.Server.Close()
+	}
+	if c.Client == nil {
+		return nil
+	}
 	return c.Client.Close()
 }
 
@@ -348,9 +380,9 @@ func (c *TorrentClient) Close() []error {
 
 // IsVideoFile checks if a file is a video
 func IsVideoFile(f *torrent.File) bool {
-	ext := path.Ext(f.Path())
+	ext := strings.ToLower(path.Ext(f.Path()))
 	switch ext {
-	case ".mp4", ".mkv", ".avi", ".avif", ".av1", ".mov", ".flv", ".f4v", ".webm", ".wmv", ".mpeg", ".mpg", ".mlv", ".hevc", ".flac", ".flic":
+	case ".mp4", ".mkv", ".avi", ".avif", ".av1", ".mov", ".flv", ".f4v", ".webm", ".wmv", ".mpeg", ".mpg", ".mlv", ".hevc", ".m4v", ".ts", ".m2ts", ".ogv":
 		return true
 	default:
 		return false
@@ -386,44 +418,42 @@ func GetFreePortString() (string, error) {
 // TorrentAddedMsg is sent when a torrent is successfully added
 type TorrentAddedMsg struct {
 	Torrent *torrent.Torrent
+	Mode    Mode
 	Error   error
 }
 
-// TorrentProgressMsg is sent to update download progress
-type TorrentProgressMsg struct {
-	InfoHash string
-	Progress float64
-	Stats    torrent.TorrentStats
+// TorrentProgressMsg is sent periodically to refresh download stats
+type TorrentProgressMsg struct{}
+
+// AddTorrentAsync adds a torrent for streaming asynchronously and returns a Bubble Tea command
+func (c *TorrentClient) AddTorrentAsync(source string) tea.Cmd {
+	return c.AddAsync(source, ModeStream)
 }
 
-// AddTorrentAsync adds a torrent asynchronously and returns a Bubble Tea command
-func (c *TorrentClient) AddTorrentAsync(magnetURI string) tea.Cmd {
+// AddAsync registers the torrent with the download manager straight away (so
+// it shows up while metadata is being fetched) and reports back once it is
+// ready. ModeDownload torrents are fetched in full.
+func (c *TorrentClient) AddAsync(source string, mode Mode) tea.Cmd {
 	return func() tea.Msg {
-		t, err := c.AddMagnet(magnetURI)
-		return TorrentAddedMsg{
-			Torrent: t,
-			Error:   err,
+		t, err := c.addTorrentNoWait(source)
+		if err != nil {
+			return TorrentAddedMsg{Mode: mode, Error: err}
 		}
-	}
-}
-
-// GetTorrentProgress returns the download progress for a torrent
-func GetTorrentProgress(t *torrent.Torrent) tea.Cmd {
-	return func() tea.Msg {
-		stats := t.Stats()
-		progress := float64(stats.BytesReadData.Int64()) / float64(t.Length())
-
-		return TorrentProgressMsg{
-			InfoHash: t.InfoHash().String(),
-			Progress: progress * 100,
-			Stats:    stats,
+		c.track(t, mode)
+		t, err = c.waitForInfo(t)
+		if err != nil {
+			return TorrentAddedMsg{Mode: mode, Error: err}
 		}
+		if mode == ModeDownload {
+			t.DownloadAll()
+		}
+		return TorrentAddedMsg{Torrent: t, Mode: mode}
 	}
 }
 
 // TickProgress returns a command that periodically updates torrent progress
 func TickProgress() tea.Cmd {
-	return tea.Tick(time.Second*2, func(t time.Time) tea.Msg {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return TorrentProgressMsg{}
 	})
 }
@@ -478,7 +508,7 @@ func GetAllVideoFiles(t *torrent.Torrent) []*torrent.File {
 // GetTorrentInfo returns formatted information about a torrent
 func GetTorrentInfo(t *torrent.Torrent) string {
 	stats := t.Stats()
-	progress := float64(stats.BytesReadData.Int64()) / float64(t.Length()) * 100
+	progress := float64(t.BytesCompleted()) / float64(t.Length()) * 100
 
 	return fmt.Sprintf(
 		"Name: %s\nSize: %s\nProgress: %.1f%%\nDown Speed: %s\nUp Speed: %s\nPeers: %d\nSeeders: %d",

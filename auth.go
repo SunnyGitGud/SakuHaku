@@ -187,6 +187,7 @@ func fetchUserAnimeList(token string, userID int, status string) tea.Cmd {
 							season
 							seasonYear
 							coverImage {
+								extraLarge
 								large
 							}
 							siteUrl

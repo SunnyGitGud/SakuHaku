@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/anacrolix/torrent"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tc "github.com/sunnygitgud/sakuhaku/torrentclient"
@@ -19,9 +18,19 @@ type Anime struct {
 	SeasonYear  *int   `json:"seasonYear"`
 	Description string `json:"description"`
 	CoverImage  struct {
-		Large string `json:"large"`
+		ExtraLarge string `json:"extraLarge"`
+		Large      string `json:"large"`
 	} `json:"coverImage"`
 	SiteURL string `json:"siteUrl"`
+}
+
+// PosterURL returns the highest resolution cover available. Downscaling a
+// large source gives a much sharper terminal render than upscaling a small one.
+func (a *Anime) PosterURL() string {
+	if a.CoverImage.ExtraLarge != "" {
+		return a.CoverImage.ExtraLarge
+	}
+	return a.CoverImage.Large
 }
 
 type Title struct {
@@ -76,6 +85,15 @@ type Torrent struct {
 	Source     string `json:"source"`
 }
 
+// source is what to hand the torrent client: the magnet if we have one,
+// otherwise the .torrent URL
+func (t Torrent) source() string {
+	if t.MagnetURI != "" {
+		return t.MagnetURI
+	}
+	return t.TorrentURL
+}
+
 type ViewMode int
 
 const (
@@ -83,6 +101,7 @@ const (
 	ModeUserList
 	ModeAnimeSearch
 	ModeTorrents
+	ModeDownloads
 )
 
 type model struct {
@@ -120,11 +139,22 @@ type model struct {
 	selectedTorrents map[int]struct{}
 	selectedAnime    *Anime
 
-	// Torrent client
-	torrentClient    *tc.TorrentClient
-	activeTorrent    *torrent.Torrent
-	streamURL        string
-	downloadProgress float64
+	// Split view (list + poster) scroll position
+	listOffset int
+
+	// Posters the last render wanted; fetched in the background after Update
+	wantPosters []string
+
+	// Torrent client / download manager
+	torrentClient  *tc.TorrentClient
+	streamURL      string
+	downloads      []tc.DownloadInfo
+	downloadCursor int
+	prevMode       ViewMode
+	ticking        bool
+	confirmDelete  string // info hash awaiting a second X to delete files
+	statusMsg      string
+	confirmQuit    bool
 
 	//spinner
 	spinner    spinner.Model

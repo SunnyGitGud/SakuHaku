@@ -27,6 +27,7 @@ func fetchTrendingAnime() tea.Cmd {
 					season
 					seasonYear
 					coverImage {
+						extraLarge
 						large
 					}
 					siteUrl
@@ -72,6 +73,7 @@ func fetchPopularThisSeason() tea.Cmd {
 					season
 					seasonYear
 					coverImage {
+						extraLarge
 						large
 					}
 					siteUrl
@@ -119,6 +121,7 @@ func fetchTopRated() tea.Cmd {
 					season
 					seasonYear
 					coverImage {
+						extraLarge
 						large
 					}
 					siteUrl

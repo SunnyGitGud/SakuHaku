@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Format Unix timestamp to readable date
@@ -122,116 +124,10 @@ func hyperlink(text, link string) string {
 	return fmt.Sprintf("\033]8;;%s\033\\%s\033]8;;\033\\", link, text)
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func combinePanels(left, right string, totalWidth int) string {
-	leftLines := strings.Split(left, "\n")
-	rightLines := strings.Split(right, "\n")
-
-	// Calculate panel widths
-	leftWidth := totalWidth / 2
-	// rightWidth := totalWidth - leftWidth - 3 // Account for separator
-
-	var result strings.Builder
-
-	maxLines := max(len(leftLines), len(rightLines))
-	for i := 0; i < maxLines; i++ {
-		// Left panel
-		leftLine := ""
-		if i < len(leftLines) {
-			leftLine = leftLines[i]
-		}
-
-		// Remove ANSI codes for length calculation
-		leftDisplayLen := visualLength(leftLine)
-
-		// Truncate if too long
-		if leftDisplayLen > leftWidth {
-			leftLine = truncateToWidth(leftLine, leftWidth-3) + "..."
-			leftDisplayLen = leftWidth
-		}
-
-		// Pad to width
-		padding := leftWidth - leftDisplayLen
-		if padding < 0 {
-			padding = 0
-		}
-
-		result.WriteString(leftLine)
-		result.WriteString(strings.Repeat(" ", padding))
-		result.WriteString(" │ ")
-
-		// Right panel
-		if i < len(rightLines) {
-			result.WriteString(rightLines[i])
-		}
-		result.WriteString("\n")
-	}
-
-	return result.String()
-}
-
-// Calculate visual length (excluding ANSI codes)
-func visualLength(s string) int {
-	inEscape := false
-	length := 0
-
-	for _, r := range s {
-		if r == '\033' {
-			inEscape = true
-		} else if inEscape {
-			if r == 'm' || r == '\\' {
-				inEscape = false
-			}
-		} else {
-			length++
-		}
-	}
-
-	return length
-}
-
-// Truncate string to visual width
-func truncateToWidth(s string, width int) string {
-	inEscape := false
-	length := 0
-	result := strings.Builder{}
-
-	for _, r := range s {
-		if r == '\033' {
-			inEscape = true
-			result.WriteRune(r)
-		} else if inEscape {
-			result.WriteRune(r)
-			if r == 'm' || r == '\\' {
-				inEscape = false
-			}
-		} else {
-			if length >= width {
-				break
-			}
-			result.WriteRune(r)
-			length++
-		}
-	}
-
-	return result.String()
-}
-
+// wrapText wraps text on word boundaries, measuring display width so wide
+// (e.g. Japanese) characters are accounted for
 func wrapText(text string, width int) string {
-	if len(text) <= width {
+	if width <= 0 || ansi.StringWidth(text) <= width {
 		return text
 	}
 
@@ -240,9 +136,9 @@ func wrapText(text string, width int) string {
 	lineLen := 0
 
 	for i, word := range words {
-		wordLen := len(word)
+		wordLen := ansi.StringWidth(word)
 
-		if lineLen+wordLen+1 > width {
+		if i > 0 && lineLen+wordLen+1 > width {
 			result.WriteString("\n")
 			lineLen = 0
 		} else if i > 0 {

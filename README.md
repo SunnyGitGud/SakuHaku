@@ -9,6 +9,27 @@ To use the repository :
 
 # Add rename `credentials.txt` file to `credentials.go`
 
+## Posters
+
+Covers are fetched in the background at AniList's highest resolution and drawn with
+truecolor half blocks (falls back to 256 colors if your terminal doesn't support it,
+force truecolor with `COLORTERM=truecolor`). Cached in `~/.anilist_cli_cache`.
+
+## Download manager
+
+Files are saved to `~/Downloads/SakuHaku` (override with `SAKUHAKU_DOWNLOAD_DIR`).
+
+| Where | Key | Action |
+| --- | --- | --- |
+| anywhere | `D` | open the download manager |
+| torrent results | `Enter` | stream in mpv/vlc |
+| torrent results | `Space` / `d` | mark torrents / download marked (or current) |
+| download manager | `Enter` | watch |
+| download manager | `Space` | pause / resume |
+| download manager | `d` | keep a streamed torrent (download all of it) |
+| download manager | `x` / `X X` | remove / remove and delete files |
+| download manager | `o` | open the folder |
+
 
 Check for `debug.log`: 
 

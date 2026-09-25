@@ -60,6 +60,7 @@ func performAnimeSearch(query string, page int) tea.Cmd {
 						season
 						seasonYear
 						coverImage {
+							extraLarge
 							large
 						}
 						siteUrl

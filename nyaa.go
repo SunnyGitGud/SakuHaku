@@ -57,7 +57,7 @@ func (item NyaaItem) toTorrent(index int) Torrent {
 		ID:         index,
 		Title:      item.Title,
 		Link:       item.Link,
-		TorrentURL: item.GUID,
+		TorrentURL: item.Link, // <link> is the .torrent download, <guid> the view page
 		MagnetURI:  magnetURI,
 		Seeders:    seeders,
 		Leechers:   leechers,
@@ -182,9 +182,9 @@ func performCombinedSearch(query string) tea.Cmd {
 			torrents := make([]Torrent, 0, len(rss.Channel.Items))
 			for i, item := range rss.Channel.Items {
 				t := item.toTorrent(i)
-				t.Source = "nyaa"  // <-- Add this line
+				t.Source = "nyaa" // <-- Add this line
 				torrents = append(torrents, t)
-}
+			}
 			nyaaChan <- torrents
 		}()
 
