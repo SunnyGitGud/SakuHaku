@@ -3,7 +3,9 @@ package main
 import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/sunnygitgud/sakuhaku/discord"
 	tc "github.com/sunnygitgud/sakuhaku/torrentclient"
+	"github.com/sunnygitgud/sakuhaku/watchparty"
 )
 
 // ----- Models -----
@@ -182,11 +184,23 @@ type model struct {
 	wantPosters []string
 
 	// Torrent client / download manager
-	torrentClient  *tc.TorrentClient
-	streamURL      string
-	playback       *playback                 // episode being streamed
-	streamFrom     ViewMode                  // screen to return to from streaming
-	torrentCtx     map[string]*streamContext // anime context per info hash
+	torrentClient *tc.TorrentClient
+	streamURL     string
+	playback      *playback                 // episode being streamed
+	streamFrom    ViewMode                  // screen to return to from streaming
+	torrentCtx    map[string]*streamContext // anime context per info hash
+
+	// Watch together
+	room          *watchparty.Room
+	roomPlayer    *watchparty.MPV
+	roomStatus    watchparty.Status
+	joinInputMode bool
+	joinInput     string
+
+	// Discord Rich Presence (nil when disabled)
+	presence       *discord.Client
+	presenceKey    string
+	presenceWarned bool
 	downloads      []tc.DownloadInfo
 	downloadCursor int
 	prevMode       ViewMode

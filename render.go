@@ -22,7 +22,15 @@ func (m *model) renderView() string {
 		return fmt.Sprintf("\n\n   %s %s\n\n", m.spinner.View(), m.loadingMsg)
 	}
 	if m.mode == ModeLogin {
-		return fmt.Sprintf("\n\n  🎬 AniList Torrent Browser\n\n  %s\n\n", m.loginMsg)
+		prompt := ""
+		if m.joinInputMode {
+			prompt = "\n  Paste room link: " + m.joinInput + "_\n"
+		}
+		status := ""
+		if m.statusMsg != "" {
+			status = "\n  " + statusStyle.Render(m.statusMsg) + "\n"
+		}
+		return fmt.Sprintf("\n\n  🎬 AniList Torrent Browser\n\n  %s\n%s%s\n", m.loginMsg, prompt, status)
 	}
 
 	if !m.ready {
@@ -323,10 +331,7 @@ func (m *model) renderTorrentContent() string {
 		}
 
 		// Show source badge
-		sourceBadge := "📦"
-		if t.Source == "nyaa" {
-			sourceBadge = "🐱"
-		}
+		sourceBadge := sourceBadge(t.Source)
 
 		name := ansi.Truncate(t.Title, max(10, m.viewport.Width-12), "…")
 		if m.torrentCursor == i {
@@ -334,13 +339,18 @@ func (m *model) renderTorrentContent() string {
 		}
 
 		ep := ""
-		if label := parseEpisode(t.Title).Label(); label != "" {
+		info := parseEpisode(t.Title)
+		if label := info.Label(); label != "" {
 			ep = " | 🎞 " + label
+			if n := m.currentNumbering(); n.isAbsolute(info) {
+				// Absolute numbering: show what it is in this season too
+				ep += " → " + strings.TrimPrefix(n.toSeason(info).Label(), "EP ")
+			}
 		}
 
 		line := fmt.Sprintf("%s [%s] %s %s\n   💾 %s | 🌱 %s | 🧲 %s%s | 📤 %s\n\n",
 			cursor, checked, sourceBadge, name,
-			formatBytes(t.TotalSize),
+			sizeLabel(t.TotalSize),
 			toString(t.Seeders),
 			toString(t.Leechers),
 			ep,
@@ -526,6 +536,8 @@ func (m *model) renderStreamingContent() string {
 		for _, d := range m.downloads {
 			if d.InfoHash == pb.InfoHash {
 				row("Speed", fmt.Sprintf("↓ %s  ↑ %s", tc.FormatSpeed(int64(d.DownRate)), tc.FormatSpeed(int64(d.UpRate))))
+				down, up := m.torrentClient.SpeedHistory(pb.InfoHash)
+				sb.WriteString(speedGraph(down, up, width))
 				row("Peers", fmt.Sprintf("%d connected (%d seeds)", d.Peers, d.Seeders))
 				row("Swarm", fmt.Sprintf("%s · %.1f%% of %s", d.State, d.Progress*100, tc.FormatBytes(d.Size)))
 				break
@@ -546,6 +558,7 @@ func (m *model) renderStreamingContent() string {
 		}
 	}
 	row("AniList", tracking)
+	sb.WriteString(m.renderRoom(row, width))
 	row("Stream URL", hyperlink(pb.URL, pb.URL))
 
 	sb.WriteString("\n" + dimStyle.Render("Legend: ") +
@@ -553,5 +566,54 @@ func (m *model) renderStreamingContent() string {
 		pieceStyles[tc.PiecePartial].Render("▓ downloading  ") +
 		pieceStyles[tc.PieceWanted].Render("▒ queued  ") +
 		pieceStyles[tc.PieceMissing].Render("░ missing"))
+	return sb.String()
+}
+
+var (
+	downGraphStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	upGraphStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+)
+
+// speedGraph draws the download (4 rows) and upload (2 rows) speed history on
+// a shared scale, with the peak as the scale label
+func speedGraph(down, up []float64, width int) string {
+	const scaleWidth = 12
+	graphWidth := width - 12 - scaleWidth - 1
+	if graphWidth < 10 || len(down) < 2 {
+		return ""
+	}
+	moving := false
+	for _, v := range append(append([]float64{}, down...), up...) {
+		moving = moving || v >= 1
+	}
+	if !moving {
+		return labelStyle.Render("History") + dimStyle.Render("no data moving yet") + "\n"
+	}
+
+	var sb strings.Builder
+	// Each graph gets its own scale: upload is usually far smaller than
+	// download and would be a flat line on a shared one
+	draw := func(label string, values []float64, rows int, style lipgloss.Style) {
+		peak := 0.0
+		for _, v := range values {
+			peak = max(peak, v)
+		}
+		scale := niceByteMax(peak)
+		for i, line := range brailleGraph(values, graphWidth, rows, scale) {
+			l, axis := "", ""
+			if i == 0 {
+				l = label
+				axis = tc.FormatSpeed(int64(scale))
+			}
+			sb.WriteString(labelStyle.Render(l) + style.Render(line) + " " + dimStyle.Render(axis) + "\n")
+		}
+	}
+	draw("↓ history", down, 4, downGraphStyle)
+	draw("↑ history", up, 2, upGraphStyle)
+
+	span := min(len(down), graphWidth*2)
+	caption := fmt.Sprintf("last %s", formatClock(float64(span)))
+	pad := max(0, graphWidth-len(caption)-3)
+	sb.WriteString(labelStyle.Render("") + dimStyle.Render(caption+" "+strings.Repeat("─", pad)+" now") + "\n")
 	return sb.String()
 }

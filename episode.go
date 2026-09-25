@@ -108,8 +108,11 @@ func parseEpisode(title string) EpisodeInfo {
 	return info
 }
 
+// seedersUnknown is what seedersOf returns for sites that don't report seeders
+const seedersUnknown = -1
+
 // seedersOf normalises the Seeders field, which is a number from AnimeTosho's
-// JSON and an int from nyaa
+// JSON, an int from nyaa and missing for SubsPlease/TokyoTosho
 func seedersOf(t Torrent) int {
 	switch v := t.Seeders.(type) {
 	case int:
@@ -117,8 +120,9 @@ func seedersOf(t Torrent) int {
 	case float64:
 		return int(v)
 	case string:
-		n, _ := strconv.Atoi(strings.TrimSpace(v))
-		return n
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return n
+		}
 	}
-	return 0
+	return seedersUnknown
 }

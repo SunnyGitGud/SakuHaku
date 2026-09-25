@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -63,17 +64,25 @@ type listPageMsg struct {
 
 // anilistRequest runs a GraphQL query, authenticated when token is set
 func anilistRequest(token, query string, variables map[string]any) (*AniListResponse, error) {
+	var result AniListResponse
+	err := anilistQuery(token, query, variables, &result)
+	return &result, err
+}
+
+// anilistQuery runs a GraphQL query (authenticated when token is set) and
+// decodes the response into out
+func anilistQuery(token, query string, variables map[string]any, out any) error {
 	jsonData, err := json.Marshal(map[string]any{
 		"query":     query,
 		"variables": variables,
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	req, err := http.NewRequest("POST", anilistEndpoint, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -83,25 +92,33 @@ func anilistRequest(token, query string, variables map[string]any) (*AniListResp
 
 	resp, err := anilistHTTPClient.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 
-	var result AniListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("AniList: %s: %w", resp.Status, err)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
 	}
-	if len(result.Errors) > 0 {
-		msgs := make([]string, len(result.Errors))
-		for i, e := range result.Errors {
+	var errs struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &errs); err != nil {
+		return fmt.Errorf("AniList: %s: %w", resp.Status, err)
+	}
+	if len(errs.Errors) > 0 {
+		msgs := make([]string, len(errs.Errors))
+		for i, e := range errs.Errors {
 			msgs[i] = e.Message
 		}
-		return &result, fmt.Errorf("AniList: %s", strings.Join(msgs, "; "))
+		return fmt.Errorf("AniList: %s", strings.Join(msgs, "; "))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return &result, fmt.Errorf("AniList: %s", resp.Status)
+		return fmt.Errorf("AniList: %s", resp.Status)
 	}
-	return &result, nil
+	return json.Unmarshal(body, out)
 }
 
 func makePublicRequest(query string, variables map[string]any) (*AniListResponse, error) {
@@ -276,4 +293,21 @@ func updateAniListProgress(token string, mediaID int, title string, episode int,
 		})
 		return msg
 	}
+}
+
+// fetchAnimeByID loads one anime's details
+func fetchAnimeByID(id int) (*Anime, error) {
+	var resp struct {
+		Data struct {
+			Media Anime `json:"Media"`
+		} `json:"data"`
+	}
+	query := fmt.Sprintf(`query ($id: Int) { Media(id: $id, type: ANIME) { %s } }`, mediaFields)
+	if err := anilistQuery("", query, map[string]any{"id": id}, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Data.Media.ID == 0 {
+		return nil, fmt.Errorf("anime %d not found", id)
+	}
+	return &resp.Data.Media, nil
 }

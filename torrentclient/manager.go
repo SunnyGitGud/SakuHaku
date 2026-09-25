@@ -2,6 +2,7 @@ package torrentclient
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,6 +89,24 @@ type tracked struct {
 	lastSample  time.Time
 	downRate    float64
 	upRate      float64
+
+	// Speed history, one sample per historyInterval, oldest first
+	downHistory []float64
+	upHistory   []float64
+	lastHistory time.Time
+}
+
+const (
+	// HistoryLen is how many speed samples are kept per torrent
+	HistoryLen      = 240
+	historyInterval = time.Second
+)
+
+func pushSample(h []float64, v float64) []float64 {
+	if len(h) >= HistoryLen {
+		h = append(h[:0], h[len(h)-HistoryLen+1:]...)
+	}
+	return append(h, v)
 }
 
 // rateSmoothing is the EWMA weight given to the newest sample
@@ -157,7 +176,26 @@ func (c *TorrentClient) Refresh() {
 			}
 		}
 		e.lastRead, e.lastWritten, e.lastSample = read, written, now
+
+		// Refresh also runs on key presses, so rate-limit the history
+		if now.Sub(e.lastHistory) >= historyInterval-50*time.Millisecond {
+			e.downHistory = pushSample(e.downHistory, e.downRate)
+			e.upHistory = pushSample(e.upHistory, e.upRate)
+			e.lastHistory = now
+		}
 	}
+}
+
+// SpeedHistory returns copies of the download and upload speed samples
+// (bytes/s, one per second, oldest first) for a managed torrent
+func (c *TorrentClient) SpeedHistory(infoHash string) (down, up []float64) {
+	e, err := c.lookup(infoHash)
+	if err != nil {
+		return nil, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]float64(nil), e.downHistory...), append([]float64(nil), e.upHistory...)
 }
 
 // Downloads returns snapshots of all managed torrents in the order they were added
@@ -413,4 +451,47 @@ func (c *TorrentClient) FileStats(infoHash, displayPath string, cells int) (File
 		}
 	}
 	return fs, nil
+}
+
+// MagnetLink returns a magnet for a managed torrent with at most a few
+// trackers, short enough to share in a room link
+func (c *TorrentClient) MagnetLink(infoHash string) (string, error) {
+	t, err := c.Torrent(infoHash)
+	if err != nil {
+		return "", err
+	}
+	mi := t.Metainfo()
+	var trackers []string
+	for _, tier := range mi.UpvertedAnnounceList() {
+		trackers = append(trackers, tier...)
+	}
+	if len(trackers) > 4 {
+		trackers = trackers[:4]
+	}
+	ih := t.InfoHash()
+	m := metainfo.Magnet{InfoHash: ih, DisplayName: t.Name(), Trackers: trackers}
+	return m.String(), nil
+}
+
+// AddPeer connects a torrent directly to a known peer, e.g. the host of a
+// watch-together room, without waiting for trackers or DHT
+func (c *TorrentClient) AddPeer(infoHash, addr string) error {
+	t, err := c.Torrent(infoHash)
+	if err != nil {
+		return err
+	}
+	ap, err := netip.ParseAddrPort(addr)
+	if err != nil {
+		return fmt.Errorf("peer address %q: %w", addr, err)
+	}
+	t.AddPeers([]torrent.PeerInfo{{Addr: ap, Source: torrent.PeerSourceDirect, Trusted: true}})
+	return nil
+}
+
+// ListenPort is the port the torrent client accepts peers on
+func (c *TorrentClient) ListenPort() int {
+	if c.Client == nil {
+		return 0
+	}
+	return c.Client.LocalPort()
 }

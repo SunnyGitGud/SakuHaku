@@ -39,12 +39,15 @@ func nextSeederStep(cur int) int {
 
 // applyTorrentFilters rebuilds the visible torrent list from allTorrents
 func (m *model) applyTorrentFilters() {
+	numbering := m.currentNumbering()
 	filtered := make([]Torrent, 0, len(m.allTorrents))
 	for _, t := range m.allTorrents {
-		if seedersOf(t) < m.minSeeders {
+		// Sites without swarm info (SubsPlease, TokyoTosho) aren't hidden by
+		// the seeder filter: unknown isn't the same as few
+		if n := seedersOf(t); n != seedersUnknown && n < m.minSeeders {
 			continue
 		}
-		if m.epFilter > 0 && !parseEpisode(t.Title).Contains(m.epFilter) {
+		if m.epFilter > 0 && !numbering.toSeason(parseEpisode(t.Title)).Contains(m.epFilter) {
 			continue
 		}
 		filtered = append(filtered, t)
@@ -70,9 +73,23 @@ func (m *model) applyTorrentFilters() {
 // filterSummary describes the active filters for the torrent header
 func (m *model) filterSummary() string {
 	ep := "any episode"
+	n := m.currentNumbering()
 	if m.epFilter > 0 {
 		ep = fmt.Sprintf("episode %d", m.epFilter)
+		if n.Known && n.Offset > 0 {
+			ep += fmt.Sprintf(" (or %d absolute)", m.epFilter+n.Offset)
+		}
 	}
 	return fmt.Sprintf("Showing %d of %d · %s · ≥%d seeders · sort: %s   (e/E episode · f seeders · o sort)",
 		len(m.torrents), len(m.allTorrents), ep, m.minSeeders, m.torrentSort)
+}
+
+// currentNumbering is the episode numbering of the anime whose torrents are shown
+func (m *model) currentNumbering() episodeNumbering {
+	if m.selectedAnime == nil {
+		return episodeNumbering{}
+	}
+	numberingMu.Lock()
+	defer numberingMu.Unlock()
+	return numberingCache[m.selectedAnime.ID]
 }

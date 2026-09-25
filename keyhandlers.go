@@ -11,6 +11,9 @@ import (
 )
 
 func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
+	if m.joinInputMode {
+		return m.handleJoinInput(msg)
+	}
 	// Login mode
 	if m.mode == ModeLogin {
 		switch msg.String() {
@@ -25,6 +28,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.loading = true
 			m.loadingMsg = "Loading trending anime..."
 			return tea.Batch(m.spinner.Tick, m.fetchCurrentList())
+		case "J":
+			// Joining a room works without an account
+			m.joinInputMode = true
+			m.joinInput = ""
+			return nil
 		case "q", "ctrl+c":
 			return tea.Quit
 		}
@@ -33,6 +41,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	if m.epInputMode {
 		return m.handleEpisodeInput(msg)
+	}
+	if m.joinInputMode {
+		return m.handleJoinInput(msg)
 	}
 
 	// Handle search mode
@@ -83,6 +94,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return tea.Quit
 	case "q":
 		return m.quit()
+	case "J":
+		m.joinInputMode = true
+		m.joinInput = ""
+		return nil
 	case "D":
 		if m.mode != ModeDownloads {
 			m.prevMode = m.mode
@@ -96,7 +111,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "esc":
 		if m.mode == ModeStreaming {
 			m.mode = m.streamFrom
-			if m.mode == ModeStreaming || m.mode == ModeLogin {
+			if m.mode == ModeStreaming {
 				m.mode = ModeTorrents
 			}
 			m.viewport.SetContent(m.renderContent())
@@ -495,7 +510,20 @@ func (m *model) openTorrents(anime Anime, entry *UserAnimeEntry) tea.Cmd {
 	m.torrentsFrom = m.mode
 	m.loading = true
 	m.loadingMsg = "Looking for torrents..."
-	return tea.Batch(m.spinner.Tick, performTorrentSearch(a.Title.Romaji, a.Title.English))
+	search := performTorrentSearch(a.Title.Romaji, a.Title.English)
+	if a.ID == 0 {
+		return tea.Batch(m.spinner.Tick, search)
+	}
+	// Work out absolute numbering alongside the search so the episode filter
+	// already knows about it when the results arrive
+	numbering := fetchEpisodeNumbering(a.ID)
+	return tea.Batch(m.spinner.Tick, func() tea.Msg {
+		done := make(chan struct{})
+		go func() { numbering(); close(done) }()
+		msg := search()
+		<-done
+		return msg
+	})
 }
 
 // handleEpisodeInput handles typing an episode number for the filter
@@ -548,6 +576,17 @@ func (m *model) handleStreamingKeys(msg tea.KeyMsg) tea.Cmd {
 	case "m":
 		pb.Tracked = false
 		return m.maybeTrack(pb, true)
+	case "W":
+		if m.room != nil {
+			m.statusMsg = "Left the room"
+			return m.closeRoom()
+		}
+		return m.hostRoom()
+	case "c":
+		if m.room != nil {
+			copyToClipboard(m.roomStatus.Link)
+			m.statusMsg = "Invite link copied"
+		}
 	case "d":
 		if m.torrentClient != nil {
 			if err := m.torrentClient.StartDownload(pb.InfoHash); err != nil {

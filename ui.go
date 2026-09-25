@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/sunnygitgud/sakuhaku/discord"
 	tc "github.com/sunnygitgud/sakuhaku/torrentclient"
 )
 
@@ -44,12 +45,15 @@ func initialModel() *model {
 	m := &model{
 		mode:             ModeLogin,
 		selectedTorrents: make(map[int]struct{}),
-		loginMsg:         "Press 'l' to login with AniList or 's' to browse without login",
+		loginMsg:         "Press 'l' to login with AniList, 's' to browse without login or 'J' to join a watch-together room",
 		torrentClient:    client,
 		spinner:          s,
 		loading:          false,
 		statusMsg:        statusMsg,
 		torrentCtx:       make(map[string]*streamContext),
+	}
+	if cfg.DiscordClientID != "" && !cfg.NoDiscord {
+		m.presence = discord.New(cfg.DiscordClientID)
 	}
 
 	// Try to load saved token
@@ -68,10 +72,14 @@ func initialModel() *model {
 
 func (m *model) Init() tea.Cmd {
 	// If we have a token, fetch user list immediately
-	if m.accessToken != "" && m.userID != 0 {
-		return tea.Batch(m.spinner.Tick, fetchUserAnimeList(m.accessToken, m.userID, "CURRENT"))
+	var join tea.Cmd
+	if cfg.JoinLink != "" {
+		join = m.startJoin(cfg.JoinLink)
 	}
-	return m.spinner.Tick
+	if m.accessToken != "" && m.userID != 0 {
+		return tea.Batch(m.spinner.Tick, fetchUserAnimeList(m.accessToken, m.userID, "CURRENT"), join)
+	}
+	return tea.Batch(m.spinner.Tick, join)
 }
 
 // defaultDownloadDir is where full downloads (and stream buffers) are kept.
@@ -96,6 +104,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	model, cmd := m.update(msg)
 	if m.fitViewport() {
 		m.viewport.SetContent(m.renderContent())
+	}
+	if presence := m.updatePresence(); presence != nil {
+		cmd = tea.Batch(cmd, presence)
 	}
 	// Rendering may have asked for posters that aren't loaded yet
 	if len(m.wantPosters) > 0 {
@@ -185,6 +196,10 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, trackCmd
 
 	case playerStartedMsg:
+		msg.apply()
+		if msg.pb.invite != nil {
+			m.loading = false
+		}
 		switch {
 		case msg.pb.Player == "browser":
 			m.statusMsg = "No video player found (install mpv), opened the stream in your browser"
@@ -202,6 +217,14 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil || msg.pb.proc == nil {
 			return m, nil
 		}
+		if msg.pb.invite != nil {
+			if msg.pb.Player != "mpv" {
+				m.statusMsg = "Watch together needs mpv, playing on your own"
+				return m, waitForPlayer(msg.pb)
+			}
+			m.statusMsg = "Connecting to the room..."
+			return m, tea.Batch(waitForPlayer(msg.pb), joinRoom(msg.pb))
+		}
 		return m, waitForPlayer(msg.pb)
 
 	case playerExitedMsg:
@@ -210,6 +233,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		pb.readStatus()
 		history.save(pb)
 		trackCmd := m.maybeTrack(pb, false)
+		if pb == m.playback {
+			trackCmd = tea.Batch(trackCmd, m.closeRoom())
+		}
 		pb.cleanup()
 		if pb == m.playback {
 			m.statusMsg = "Player closed"
@@ -221,6 +247,21 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.SetContent(m.renderContent())
 		}
 		return m, trackCmd
+
+	case joinResolvedMsg, roomStartedMsg, roomStatusMsg:
+		cmd, _ := m.handleRoomMsg(msg)
+		return m, cmd
+
+	case presenceMsg:
+		// Discord not running is normal; mention a failure once, not every update
+		if msg.err != nil && !m.presenceWarned {
+			m.presenceWarned = true
+			m.statusMsg = "Discord presence unavailable: " + msg.err.Error()
+		}
+		if msg.err != nil {
+			m.presenceKey = "" // try again on the next change
+		}
+		return m, nil
 
 	case updateProgressMsg:
 		text := ""
@@ -409,6 +450,12 @@ func (m *model) headerView() string {
 	var title string
 	if m.searchMode {
 		title = titleStyle.Render(fmt.Sprintf("Search Anime: %s_", m.searchInput))
+	} else if m.joinInputMode {
+		link := m.joinInput
+		if w := m.viewport.Width - 30; w > 10 && len(link) > w {
+			link = "…" + link[len(link)-w:]
+		}
+		title = titleStyle.Render(fmt.Sprintf("Paste room link: %s_", link))
 	} else if m.epInputMode {
 		title = titleStyle.Render(fmt.Sprintf("Episode (empty = any): %s_", m.epInput))
 	} else {
@@ -450,7 +497,7 @@ func (m *model) footerView() string {
 			pageInfo = fmt.Sprintf("Page %d/%d | %d-%d of %d | Enter: stream | d: download | Space: mark | n/p: page | D: downloads | Esc: back",
 				m.torrentPage+1, m.totalTorrentPages(perPage), startIdx, endIdx, len(m.torrents))
 		case ModeStreaming:
-			pageInfo = "w: (re)open player | s: stop player | m: mark watched | d: keep file | D: downloads | Esc: back"
+			pageInfo = "w: (re)open player | s: stop | W: watch together | c: copy link | m: mark watched | d: keep | Esc: back"
 		case ModeDownloads:
 			pageInfo = "Enter: watch | Space: pause | d: keep | x: remove | X: delete files | o: folder | Esc: back"
 		}
